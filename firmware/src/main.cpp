@@ -18,8 +18,8 @@
 
 // ============== CONFIGURATION ==============
 // WiFi credentials - UPDATE THESE
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID = "NESS";
+const char* WIFI_PASS = "mugemert2024";
 
 // Sampling configuration
 const int SAMPLE_RATE_HZ = 50;  // 50 samples per second

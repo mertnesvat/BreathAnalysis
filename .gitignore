@@ -1,10 +1,15 @@
-# Data files (large, personal)
+# Data files (large, personal) - exclude by default
 data/sessions/*.csv
 data/sessions/*.bin
 data/sessions/*.json
+data/sessions/*.png
 
 # Keep directory structure
 !data/sessions/.gitkeep
+
+# Keep example sessions for reference
+!data/sessions/meditation_10min_*.csv
+!data/sessions/meditation_full_analysis.png
 
 # Python
 __pycache__/
