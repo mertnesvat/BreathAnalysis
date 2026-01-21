@@ -1,0 +1,42 @@
+# Data files (large, personal)
+data/sessions/*.csv
+data/sessions/*.bin
+data/sessions/*.json
+
+# Keep directory structure
+!data/sessions/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# PlatformIO
+firmware/.pio/
+firmware/.pioenvs/
+firmware/.piolibdeps/
+
+# Arduino
+firmware/build/
+
+# macOS
+.DS_Store
+
+# Compiled
+*.o
+*.elf
+*.bin
+*.hex
