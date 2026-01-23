@@ -54,12 +54,16 @@ class BreathDataReceiver:
                     self.session_info = info
 
                 print(f"\n{'─'*50}")
-                print("Press ENTER to start recording...")
-                print("Press Ctrl+C to stop and save")
-                print(f"{'─'*50}\n")
 
-                # Wait for user to press Enter
-                await asyncio.get_event_loop().run_in_executor(None, input)
+                # Auto-start if duration specified and not interactive
+                if duration_seconds and not sys.stdin.isatty():
+                    print(f"[Auto-start] Duration specified, starting immediately...")
+                else:
+                    print("Press ENTER to start recording...")
+                    print("Press Ctrl+C to stop and save")
+                    print(f"{'─'*50}\n")
+                    # Wait for user to press Enter
+                    await asyncio.get_event_loop().run_in_executor(None, input)
 
                 # Start recording
                 await ws.send("start")

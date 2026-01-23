@@ -1,10 +1,11 @@
 /*
- * Breath Analysis Firmware for XIAO ESP32S3
+ * Breath Analysis Firmware for ESP32 WROOM-32 (HW-394)
+ *
+ * Prototype 2: Simplified for meditation (no piezo)
  *
  * Sensors:
- *   - Thermistor (NTC 10K) on A0 (GPIO1) - nasal airflow temperature
- *   - Piezoelectric sensor on A1 (GPIO2) - chest/belly expansion
- *   - MAX30102 on I2C (SDA=GPIO5, SCL=GPIO6) - heart rate & SpO2
+ *   - Thermistor (NTC 10K) on GPIO32 - nasal airflow temperature
+ *   - MAX30102 on I2C (SDA=GPIO21, SCL=GPIO22) - heart rate & SpO2
  *
  * Data is streamed via WebSocket to a Python receiver for recording.
  */
@@ -17,18 +18,17 @@
 #include <ArduinoJson.h>
 
 // ============== CONFIGURATION ==============
-// WiFi credentials - UPDATE THESE
-const char* WIFI_SSID = "NESS";
+// WiFi credentials
+const char* WIFI_SSID = "NESS_iOt";
 const char* WIFI_PASS = "mugemert2024";
 
 // Sampling configuration
 const int SAMPLE_RATE_HZ = 50;  // 50 samples per second
 const int SAMPLE_INTERVAL_MS = 1000 / SAMPLE_RATE_HZ;
 
-// Pin definitions for XIAO ESP32S3
-const int PIN_THERMISTOR = A0;  // GPIO1
-const int PIN_PIEZO = A1;       // GPIO2
-// I2C uses default pins: SDA=GPIO5 (D4), SCL=GPIO6 (D5)
+// Pin definitions for ESP32 WROOM-32
+const int PIN_THERMISTOR = 32;  // GPIO32 (ADC1_CH4) - works with WiFi
+// I2C uses default pins: SDA=GPIO21, SCL=GPIO22
 
 // Thermistor parameters (for 10K NTC with 10K voltage divider)
 const float THERMISTOR_NOMINAL = 10000.0;  // 10K at 25°C
@@ -60,10 +60,11 @@ void setup() {
 
     Serial.println("\n========================================");
     Serial.println("  Breath Analysis - Meditation Monitor");
+    Serial.println("  Board: ESP32 WROOM-32 (HW-394)");
     Serial.println("========================================\n");
 
-    // Initialize I2C for MAX30102
-    Wire.begin(5, 6);  // SDA=GPIO5, SCL=GPIO6
+    // Initialize I2C with default pins (SDA=21, SCL=22)
+    Wire.begin();
 
     setupWiFi();
     setupSensors();
@@ -99,7 +100,7 @@ void setupWiFi() {
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 60) {
         delay(500);
         Serial.print(".");
         attempts++;
@@ -124,10 +125,6 @@ void setupSensors() {
     // Test thermistor reading
     int thermRaw = analogRead(PIN_THERMISTOR);
     Serial.printf("[Sensor] Thermistor raw: %d (expected ~2000 at room temp)\n", thermRaw);
-
-    // Test piezo reading
-    int piezoRaw = analogRead(PIN_PIEZO);
-    Serial.printf("[Sensor] Piezo raw: %d (should vary with pressure)\n", piezoRaw);
 
     // Initialize MAX30102
     Serial.print("[Sensor] Initializing MAX30102... ");
@@ -171,9 +168,9 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
                 // Send welcome message with device info
                 JsonDocument doc;
                 doc["type"] = "info";
-                doc["device"] = "XIAO_ESP32S3";
+                doc["device"] = "ESP32_WROOM32";
                 doc["sample_rate"] = SAMPLE_RATE_HZ;
-                doc["sensors"] = "thermistor,piezo,max30102";
+                doc["sensors"] = "thermistor,max30102";
 
                 String json;
                 serializeJson(doc, json);
@@ -227,9 +224,8 @@ void sendSensorData() {
     // Calculate timestamp relative to session start
     unsigned long timestamp = millis() - sessionStartTime;
 
-    // Read analog sensors
+    // Read thermistor
     int thermistorRaw = analogRead(PIN_THERMISTOR);
-    int piezoRaw = analogRead(PIN_PIEZO);
 
     // Read MAX30102
     uint32_t irValue = pulseOximeter.getIR();
@@ -239,13 +235,8 @@ void sendSensorData() {
     JsonDocument doc;
     doc["t"] = timestamp;           // timestamp in ms
     doc["th"] = thermistorRaw;      // thermistor raw ADC (0-4095)
-    doc["pz"] = piezoRaw;           // piezo raw ADC (0-4095)
     doc["ir"] = irValue;            // MAX30102 IR value
     doc["rd"] = redValue;           // MAX30102 Red value
-
-    // Optional: calculate temperature (can also do this in post-processing)
-    // float tempC = readThermistorTemp();
-    // doc["temp"] = tempC;
 
     String json;
     serializeJson(doc, json);
@@ -257,7 +248,6 @@ float readThermistorTemp() {
     int raw = analogRead(PIN_THERMISTOR);
 
     // Convert ADC value to resistance
-    // Assuming thermistor is between ADC pin and GND, with pullup to 3.3V
     float resistance = SERIES_RESISTOR / ((4095.0 / raw) - 1.0);
 
     // Steinhart-Hart equation (simplified B-parameter version)
