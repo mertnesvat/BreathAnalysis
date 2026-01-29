@@ -16,6 +16,7 @@
 #include <Wire.h>
 #include "MAX30105.h"
 #include <ArduinoJson.h>
+#include "driver/rtc_io.h"  // For RTC GPIO pull-up during deep sleep
 
 // ============== CONFIGURATION ==============
 // WiFi credentials
@@ -28,6 +29,9 @@ const int SAMPLE_INTERVAL_MS = 1000 / SAMPLE_RATE_HZ;
 
 // Pin definitions for ESP32 WROOM-32
 const int PIN_THERMISTOR = 32;  // GPIO32 (ADC1_CH4) - works with WiFi
+const int PIN_LED = 27;         // GPIO27 - status LED (3V COB LED strip via transistor)
+const int PIN_BTN_POWER = 33;   // GPIO33 (RTC_GPIO8) - Power/sleep button (long press 2s)
+const int PIN_BTN_RECORD = 18;  // GPIO18 - Record toggle button
 // I2C uses default pins: SDA=GPIO21, SCL=GPIO22
 
 // Thermistor parameters (for 10K NTC with 10K voltage divider)
@@ -46,9 +50,43 @@ unsigned long sessionStartTime = 0;
 unsigned long lastSampleTime = 0;
 int connectedClients = 0;
 
+// Sensor & LED state
+bool sensorsOK = false;
+bool max30102OK = false;
+unsigned long lastLedToggle = 0;
+bool ledState = false;
+
+// Breath-reactive LED (PWM)
+const int LED_FREQ = 5000;      // PWM frequency
+const int LED_RESOLUTION = 8;   // 8-bit (0-255)
+
+// Button state
+const unsigned long DEBOUNCE_MS = 50;        // Button debounce time
+const unsigned long LONG_PRESS_MS = 2000;    // Long press for power off
+unsigned long btnPowerPressTime = 0;
+unsigned long btnRecordPressTime = 0;
+bool btnPowerLastState = HIGH;               // Pull-up, so HIGH = not pressed
+bool btnRecordLastState = HIGH;
+bool btnPowerPressed = false;
+bool btnRecordPressed = false;
+
+// Thermistor baseline tracking for breath detection
+float thermBaseline = 2000.0;   // Running baseline
+float thermMin = 2000.0;        // Track min (inhale)
+float thermMax = 2000.0;        // Track max (exhale)
+float thermSmoothed = 2000.0;   // Smoothed reading
+const float SMOOTHING = 0.3;    // Higher = more responsive (0.1-0.5)
+const float SENSITIVITY = 8.0;  // Amplify small changes
+
 // ============== FUNCTION DECLARATIONS ==============
 void setupWiFi();
 void setupSensors();
+void setupLED();
+void setupButtons();
+void updateLED();
+void handleButtons();
+void toggleRecording();
+void enterDeepSleep();
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
 void sendSensorData();
 float readThermistorTemp();
@@ -66,6 +104,8 @@ void setup() {
     // Initialize I2C with default pins (SDA=21, SCL=22)
     Wire.begin();
 
+    setupLED();
+    setupButtons();
     setupWiFi();
     setupSensors();
 
@@ -80,6 +120,8 @@ void setup() {
 // ============== MAIN LOOP ==============
 void loop() {
     webSocket.loop();
+    handleButtons();
+    updateLED();
 
     // Only sample when recording and at the correct interval
     if (isRecording) {
@@ -116,6 +158,192 @@ void setupWiFi() {
     }
 }
 
+// ============== LED SETUP ==============
+void setupLED() {
+    // Setup PWM for breath-reactive LED (ESP32 Arduino 3.x API)
+    ledcAttach(PIN_LED, LED_FREQ, LED_RESOLUTION);
+    ledcWrite(PIN_LED, 0);
+    Serial.println("[LED] Breath-reactive LED on GPIO27 (PWM)");
+}
+
+// ============== BUTTON SETUP ==============
+void setupButtons() {
+    // Use internal pull-ups - buttons connect to GND when pressed
+    pinMode(PIN_BTN_POWER, INPUT_PULLUP);
+    pinMode(PIN_BTN_RECORD, INPUT_PULLUP);
+
+    // Configure wake-up from deep sleep on power button (GPIO5)
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BTN_POWER, LOW);
+
+    Serial.println("[Buttons] Power (GPIO5), Record (GPIO18) initialized");
+    Serial.println("[Buttons] Power: long press 2s = sleep | Record: press = toggle");
+}
+
+// ============== BUTTON HANDLER ==============
+void handleButtons() {
+    unsigned long now = millis();
+
+    // Read current button states (LOW = pressed due to pull-up)
+    bool powerState = digitalRead(PIN_BTN_POWER);
+    bool recordState = digitalRead(PIN_BTN_RECORD);
+
+    // ---- POWER BUTTON (long press detection) ----
+    if (powerState == LOW && btnPowerLastState == HIGH) {
+        // Button just pressed - start timing
+        btnPowerPressTime = now;
+        btnPowerPressed = true;
+    } else if (powerState == LOW && btnPowerPressed) {
+        // Button still held - check for long press
+        if (now - btnPowerPressTime >= LONG_PRESS_MS) {
+            Serial.println("[Button] Power long-press detected - entering deep sleep");
+            enterDeepSleep();
+        }
+    } else if (powerState == HIGH && btnPowerLastState == LOW) {
+        // Button released
+        btnPowerPressed = false;
+    }
+    btnPowerLastState = powerState;
+
+    // ---- RECORD BUTTON (single press with debounce) ----
+    if (recordState == LOW && btnRecordLastState == HIGH) {
+        // Button just pressed - start debounce
+        btnRecordPressTime = now;
+    } else if (recordState == HIGH && btnRecordLastState == LOW) {
+        // Button released - check if it was a valid press (debounced)
+        if (now - btnRecordPressTime >= DEBOUNCE_MS) {
+            Serial.println("[Button] Record button pressed");
+            toggleRecording();
+        }
+    }
+    btnRecordLastState = recordState;
+}
+
+// ============== TOGGLE RECORDING ==============
+void toggleRecording() {
+    if (isRecording) {
+        // Stop recording
+        isRecording = false;
+        unsigned long duration = millis() - sessionStartTime;
+        Serial.printf("[Session] Recording STOPPED (duration: %lu ms)\n", duration);
+
+        // Notify WebSocket clients
+        JsonDocument doc;
+        doc["type"] = "session_end";
+        doc["duration_ms"] = duration;
+        doc["source"] = "button";
+        String json;
+        serializeJson(doc, json);
+        webSocket.broadcastTXT(json);
+
+        // Visual feedback: quick blink
+        for (int i = 0; i < 3; i++) {
+            ledcWrite(PIN_LED, 255);
+            delay(100);
+            ledcWrite(PIN_LED, 0);
+            delay(100);
+        }
+    } else {
+        // Start recording
+        isRecording = true;
+        sessionStartTime = millis();
+        lastSampleTime = sessionStartTime;
+        Serial.println("[Session] Recording STARTED (via button)");
+
+        // Notify WebSocket clients
+        JsonDocument doc;
+        doc["type"] = "session_start";
+        doc["timestamp"] = sessionStartTime;
+        doc["source"] = "button";
+        String json;
+        serializeJson(doc, json);
+        webSocket.broadcastTXT(json);
+
+        // Visual feedback: fade up
+        for (int b = 0; b <= 255; b += 5) {
+            ledcWrite(PIN_LED, b);
+            delay(10);
+        }
+    }
+}
+
+// ============== DEEP SLEEP ==============
+void enterDeepSleep() {
+    // Stop any recording
+    if (isRecording) {
+        toggleRecording();
+    }
+
+    // Visual feedback: fade out
+    Serial.println("[Power] Entering deep sleep...");
+    for (int b = 255; b >= 0; b -= 5) {
+        ledcWrite(PIN_LED, b);
+        delay(20);
+    }
+    ledcWrite(PIN_LED, 0);
+
+    // Disconnect WiFi cleanly
+    webSocket.close();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+
+    delay(100);
+
+    // Configure RTC GPIO for wake-up with pull-up enabled
+    rtc_gpio_pullup_en((gpio_num_t)PIN_BTN_POWER);
+    rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN_POWER);
+
+    // Enter deep sleep - will wake on GPIO5 (power button) going LOW
+    Serial.println("[Power] Sleeping now. Press power button to wake.");
+    esp_deep_sleep_start();
+}
+
+// ============== LED UPDATE ==============
+void updateLED() {
+    if (!sensorsOK) {
+        // Sensors not OK: LED OFF
+        ledcWrite(PIN_LED, 0);
+        return;
+    }
+
+    // Read thermistor and smooth it
+    int thermRaw = analogRead(PIN_THERMISTOR);
+    thermSmoothed = (SMOOTHING * thermRaw) + ((1.0 - SMOOTHING) * thermSmoothed);
+
+    // Slow-moving baseline (adapts over ~10 seconds)
+    thermBaseline = (0.005 * thermSmoothed) + (0.995 * thermBaseline);
+
+    // Calculate deviation from baseline
+    float deviation = thermSmoothed - thermBaseline;
+
+    // Amplify the deviation for sensitivity
+    // Breath typically causes ±10-30 ADC units change
+    // We want this to map to full LED range
+    float amplified = deviation * SENSITIVITY;
+
+    // Map to 0-1 range centered at 0.5
+    // Positive deviation (exhale/warm) = brighter
+    // Negative deviation (inhale/cool) = dimmer
+    float normalized = 0.5 + (amplified / 100.0);
+    normalized = constrain(normalized, 0.0, 1.0);
+
+    // Apply gamma correction for more natural brightness
+    float gamma = 1.8;  // Slightly less aggressive gamma
+    float corrected = pow(normalized, gamma);
+
+    int brightness = (int)(corrected * 255);
+
+    // Minimum brightness so LED doesn't turn fully off
+    if (brightness < 10) brightness = 10;
+
+    // Recording indicator: subtle pulse overlay (2Hz sine wave, ±30 brightness)
+    if (isRecording) {
+        float pulse = sin(millis() * 0.0125) * 30;  // 2Hz oscillation
+        brightness = constrain(brightness + (int)pulse, 10, 255);
+    }
+
+    ledcWrite(PIN_LED, brightness);
+}
+
 // ============== SENSOR SETUP ==============
 void setupSensors() {
     // Configure ADC
@@ -126,10 +354,14 @@ void setupSensors() {
     int thermRaw = analogRead(PIN_THERMISTOR);
     Serial.printf("[Sensor] Thermistor raw: %d (expected ~2000 at room temp)\n", thermRaw);
 
+    // Check if thermistor is connected (should be between 100-4000)
+    bool thermistorOK = (thermRaw > 100 && thermRaw < 4000);
+
     // Initialize MAX30102
     Serial.print("[Sensor] Initializing MAX30102... ");
     if (pulseOximeter.begin(Wire, I2C_SPEED_STANDARD)) {
         Serial.println("OK");
+        max30102OK = true;
 
         // Configure for pulse oximetry
         pulseOximeter.setup(
@@ -144,7 +376,12 @@ void setupSensors() {
         pulseOximeter.enableDIETEMPRDY();  // Enable die temperature reading
     } else {
         Serial.println("FAILED - check wiring!");
+        max30102OK = false;
     }
+
+    // Set overall sensor status
+    sensorsOK = thermistorOK && max30102OK;
+    Serial.printf("[Sensor] Status: %s\n", sensorsOK ? "ALL OK - LED ON" : "ISSUES - LED OFF");
 }
 
 // ============== WEBSOCKET EVENT HANDLER ==============
