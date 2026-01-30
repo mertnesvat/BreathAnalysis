@@ -1,499 +1,502 @@
 /*
  * Breath Analysis Firmware for ESP32 WROOM-32 (HW-394)
- *
- * Prototype 2: Simplified for meditation (no piezo)
+ * BLE Version - For Flutter App Integration
  *
  * Sensors:
  *   - Thermistor (NTC 10K) on GPIO32 - nasal airflow temperature
  *   - MAX30102 on I2C (SDA=GPIO21, SCL=GPIO22) - heart rate & SpO2
  *
- * Data is streamed via WebSocket to a Python receiver for recording.
+ * Communication: BLE (NimBLE) - connects to Flutter meditation app
+ * Data rate: 20Hz sensor streaming when recording
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WebSocketsServer.h>
+#include <NimBLEDevice.h>
 #include <Wire.h>
 #include "MAX30105.h"
-#include <ArduinoJson.h>
-#include "driver/rtc_io.h"  // For RTC GPIO pull-up during deep sleep
+#include "driver/rtc_io.h"
 
-// ============== CONFIGURATION ==============
-// WiFi credentials
-const char* WIFI_SSID = "NESS_iOt";
-const char* WIFI_PASS = "mugemert2024";
+// ============== BLE CONFIGURATION ==============
+#define DEVICE_NAME "BreathMonitor"
+#define FIRMWARE_VERSION "1.0.0"
 
-// Sampling configuration
-const int SAMPLE_RATE_HZ = 50;  // 50 samples per second
+// BLE UUIDs
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHAR_DEVICE_INFO    "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define CHAR_SENSOR_DATA    "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+#define CHAR_CONTROL        "beb5483e-36e1-4688-b7f5-ea07361b26aa"
+#define CHAR_STATUS         "beb5483e-36e1-4688-b7f5-ea07361b26ab"
+
+// ============== SAMPLING CONFIGURATION ==============
+const int SAMPLE_RATE_HZ = 20;  // 20Hz over BLE (sufficient for breath)
 const int SAMPLE_INTERVAL_MS = 1000 / SAMPLE_RATE_HZ;
+const int STATUS_INTERVAL_MS = 1000;  // Send status every 1 second
 
-// Pin definitions for ESP32 WROOM-32
-const int PIN_THERMISTOR = 32;  // GPIO32 (ADC1_CH4) - works with WiFi
-const int PIN_LED = 27;         // GPIO27 - status LED (3V COB LED strip via transistor)
-const int PIN_BTN_POWER = 33;   // GPIO33 (RTC_GPIO8) - Power/sleep button (long press 2s)
-const int PIN_BTN_RECORD = 18;  // GPIO18 - Record toggle button
-// I2C uses default pins: SDA=GPIO21, SCL=GPIO22
+// ============== PIN DEFINITIONS ==============
+const int PIN_THERMISTOR = 32;  // GPIO32 (ADC1_CH4)
+const int PIN_LED = 27;         // GPIO27 - status LED via transistor
+const int PIN_BTN_POWER = 33;   // GPIO33 (RTC_GPIO8) - Power/sleep
+const int PIN_BTN_RECORD = 18;  // GPIO18 - Record toggle (local backup)
 
-// Thermistor parameters (for 10K NTC with 10K voltage divider)
-const float THERMISTOR_NOMINAL = 10000.0;  // 10K at 25°C
-const float TEMP_NOMINAL = 25.0;
-const float B_COEFFICIENT = 3950.0;  // Check your thermistor datasheet
-const float SERIES_RESISTOR = 10000.0;  // 10K pullup resistor
+// ============== BLE COMMAND CODES ==============
+const uint8_t CMD_START = 0x01;
+const uint8_t CMD_STOP = 0x02;
+const uint8_t CMD_PAUSE = 0x03;
+const uint8_t CMD_RESUME = 0x04;
 
 // ============== GLOBAL OBJECTS ==============
-WebSocketsServer webSocket = WebSocketsServer(81);
 MAX30105 pulseOximeter;
+NimBLEServer* pServer = nullptr;
+NimBLECharacteristic* pSensorDataChar = nullptr;
+NimBLECharacteristic* pStatusChar = nullptr;
+NimBLECharacteristic* pControlChar = nullptr;
+NimBLECharacteristic* pDeviceInfoChar = nullptr;
 
-// Session state
+// ============== STATE VARIABLES ==============
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
 bool isRecording = false;
+bool isPaused = false;
 unsigned long sessionStartTime = 0;
 unsigned long lastSampleTime = 0;
-int connectedClients = 0;
+unsigned long lastStatusTime = 0;
 
-// Sensor & LED state
+// Sensor state
 bool sensorsOK = false;
 bool max30102OK = false;
-unsigned long lastLedToggle = 0;
-bool ledState = false;
 
-// Breath-reactive LED (PWM)
-const int LED_FREQ = 5000;      // PWM frequency
-const int LED_RESOLUTION = 8;   // 8-bit (0-255)
+// LED state
+const int LED_FREQ = 5000;
+const int LED_RESOLUTION = 8;
 
 // Button state
-const unsigned long DEBOUNCE_MS = 50;        // Button debounce time
-const unsigned long LONG_PRESS_MS = 2000;    // Long press for power off
+const unsigned long DEBOUNCE_MS = 50;
+const unsigned long LONG_PRESS_MS = 2000;
 unsigned long btnPowerPressTime = 0;
 unsigned long btnRecordPressTime = 0;
-bool btnPowerLastState = HIGH;               // Pull-up, so HIGH = not pressed
+bool btnPowerLastState = HIGH;
 bool btnRecordLastState = HIGH;
 bool btnPowerPressed = false;
-bool btnRecordPressed = false;
 
-// Thermistor baseline tracking for breath detection
-float thermBaseline = 2000.0;   // Running baseline
-float thermMin = 2000.0;        // Track min (inhale)
-float thermMax = 2000.0;        // Track max (exhale)
-float thermSmoothed = 2000.0;   // Smoothed reading
-const float SMOOTHING = 0.3;    // Higher = more responsive (0.1-0.5)
-const float SENSITIVITY = 8.0;  // Amplify small changes
+// Breath LED tracking
+float thermBaseline = 2000.0;
+float thermSmoothed = 2000.0;
+const float SMOOTHING = 0.3;
+const float SENSITIVITY = 8.0;
+
+// ============== DATA PACKET STRUCTURE ==============
+// Binary packet: 14 bytes (fits in BLE MTU)
+#pragma pack(push, 1)
+struct SensorPacket {
+    uint32_t timestamp_ms;  // 4 bytes
+    uint16_t thermistor;    // 2 bytes (ADC 0-4095)
+    uint32_t ir_value;      // 4 bytes
+    uint32_t red_value;     // 4 bytes
+};  // Total: 14 bytes
+#pragma pack(pop)
+
+// Status packet: 4 bytes
+#pragma pack(push, 1)
+struct StatusPacket {
+    uint8_t battery_percent;  // 0-100
+    uint8_t sensors_ok;       // 1=OK, 0=error
+    uint8_t is_recording;     // 1=recording, 0=idle
+    uint8_t reserved;         // future use
+};
+#pragma pack(pop)
 
 // ============== FUNCTION DECLARATIONS ==============
-void setupWiFi();
+void setupBLE();
 void setupSensors();
 void setupLED();
 void setupButtons();
 void updateLED();
 void handleButtons();
-void toggleRecording();
-void enterDeepSleep();
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
 void sendSensorData();
-float readThermistorTemp();
+void sendStatus();
+void startRecording();
+void stopRecording();
+void enterDeepSleep();
+
+// ============== BLE CALLBACKS ==============
+class ServerCallbacks : public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer) {
+        deviceConnected = true;
+        Serial.println("[BLE] Client connected");
+
+        // Visual feedback: quick pulse
+        for (int i = 0; i < 2; i++) {
+            ledcWrite(PIN_LED, 255);
+            delay(100);
+            ledcWrite(PIN_LED, 50);
+            delay(100);
+        }
+    }
+
+    void onDisconnect(NimBLEServer* pServer) {
+        deviceConnected = false;
+        Serial.println("[BLE] Client disconnected");
+
+        // Pause recording on disconnect (not stop)
+        if (isRecording) {
+            isPaused = true;
+            Serial.println("[Session] Paused (BLE disconnected)");
+        }
+
+        // Restart advertising
+        NimBLEDevice::startAdvertising();
+        Serial.println("[BLE] Advertising restarted");
+    }
+};
+
+class ControlCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            uint8_t cmd = value[0];
+            Serial.printf("[BLE] Command received: 0x%02X\n", cmd);
+
+            switch (cmd) {
+                case CMD_START:
+                    startRecording();
+                    break;
+                case CMD_STOP:
+                    stopRecording();
+                    break;
+                case CMD_PAUSE:
+                    if (isRecording) {
+                        isPaused = true;
+                        Serial.println("[Session] Paused");
+                    }
+                    break;
+                case CMD_RESUME:
+                    if (isRecording && isPaused) {
+                        isPaused = false;
+                        Serial.println("[Session] Resumed");
+                    }
+                    break;
+            }
+        }
+    }
+};
 
 // ============== SETUP ==============
 void setup() {
     Serial.begin(115200);
-    delay(1000);  // Wait for serial to stabilize
+    delay(500);
 
     Serial.println("\n========================================");
-    Serial.println("  Breath Analysis - Meditation Monitor");
-    Serial.println("  Board: ESP32 WROOM-32 (HW-394)");
+    Serial.println("  Breath Analysis - BLE Edition");
+    Serial.println("  Firmware: " FIRMWARE_VERSION);
     Serial.println("========================================\n");
 
-    // Initialize I2C with default pins (SDA=21, SCL=22)
     Wire.begin();
 
     setupLED();
     setupButtons();
-    setupWiFi();
     setupSensors();
+    setupBLE();
 
-    // Start WebSocket server
-    webSocket.begin();
-    webSocket.onEvent(webSocketEvent);
-
-    Serial.println("\n[READY] Connect to WebSocket at ws://" + WiFi.localIP().toString() + ":81");
-    Serial.println("[READY] Send 'start' to begin recording, 'stop' to end\n");
+    Serial.println("\n[READY] BLE advertising as: " DEVICE_NAME);
+    Serial.println("[READY] Waiting for app connection...\n");
 }
 
 // ============== MAIN LOOP ==============
 void loop() {
-    webSocket.loop();
     handleButtons();
     updateLED();
 
-    // Only sample when recording and at the correct interval
-    if (isRecording) {
+    // Handle reconnection
+    if (deviceConnected && !oldDeviceConnected) {
+        // Just connected - resume if was paused
+        if (isRecording && isPaused) {
+            isPaused = false;
+            Serial.println("[Session] Resumed (BLE reconnected)");
+        }
+        oldDeviceConnected = deviceConnected;
+    }
+
+    if (!deviceConnected && oldDeviceConnected) {
+        oldDeviceConnected = deviceConnected;
+    }
+
+    // Send sensor data when recording and connected
+    if (isRecording && !isPaused && deviceConnected) {
         unsigned long currentTime = millis();
         if (currentTime - lastSampleTime >= SAMPLE_INTERVAL_MS) {
             lastSampleTime = currentTime;
             sendSensorData();
         }
     }
+
+    // Send status periodically when connected
+    if (deviceConnected) {
+        unsigned long currentTime = millis();
+        if (currentTime - lastStatusTime >= STATUS_INTERVAL_MS) {
+            lastStatusTime = currentTime;
+            sendStatus();
+        }
+    }
 }
 
-// ============== WIFI SETUP ==============
-void setupWiFi() {
-    Serial.print("[WiFi] Connecting to ");
-    Serial.println(WIFI_SSID);
+// ============== BLE SETUP ==============
+void setupBLE() {
+    Serial.println("[BLE] Initializing NimBLE...");
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    NimBLEDevice::init(DEVICE_NAME);
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9);  // Max power for range
 
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 60) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
+    // Create server
+    pServer = NimBLEDevice::createServer();
+    pServer->setCallbacks(new ServerCallbacks());
 
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n[WiFi] Connected!");
-        Serial.print("[WiFi] IP Address: ");
-        Serial.println(WiFi.localIP());
-    } else {
-        Serial.println("\n[WiFi] Connection FAILED!");
-        Serial.println("[WiFi] Check credentials and restart");
-    }
+    // Create service
+    NimBLEService* pService = pServer->createService(SERVICE_UUID);
+
+    // Device Info characteristic (read-only)
+    pDeviceInfoChar = pService->createCharacteristic(
+        CHAR_DEVICE_INFO,
+        NIMBLE_PROPERTY::READ
+    );
+    String deviceInfo = String(DEVICE_NAME) + "|" + FIRMWARE_VERSION + "|" + String(SAMPLE_RATE_HZ);
+    pDeviceInfoChar->setValue(deviceInfo.c_str());
+
+    // Sensor Data characteristic (notify)
+    pSensorDataChar = pService->createCharacteristic(
+        CHAR_SENSOR_DATA,
+        NIMBLE_PROPERTY::NOTIFY
+    );
+
+    // Control characteristic (write)
+    pControlChar = pService->createCharacteristic(
+        CHAR_CONTROL,
+        NIMBLE_PROPERTY::WRITE
+    );
+    pControlChar->setCallbacks(new ControlCallbacks());
+
+    // Status characteristic (notify)
+    pStatusChar = pService->createCharacteristic(
+        CHAR_STATUS,
+        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ
+    );
+
+    // Start service
+    pService->start();
+
+    // Start advertising
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06);
+    pAdvertising->start();
+
+    Serial.println("[BLE] Service started, advertising...");
 }
 
 // ============== LED SETUP ==============
 void setupLED() {
-    // Setup PWM for breath-reactive LED (ESP32 Arduino 3.x API)
     ledcAttach(PIN_LED, LED_FREQ, LED_RESOLUTION);
     ledcWrite(PIN_LED, 0);
-    Serial.println("[LED] Breath-reactive LED on GPIO27 (PWM)");
+    Serial.println("[LED] Breath-reactive LED initialized");
 }
 
 // ============== BUTTON SETUP ==============
 void setupButtons() {
-    // Use internal pull-ups - buttons connect to GND when pressed
     pinMode(PIN_BTN_POWER, INPUT_PULLUP);
     pinMode(PIN_BTN_RECORD, INPUT_PULLUP);
-
-    // Configure wake-up from deep sleep on power button (GPIO5)
     esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BTN_POWER, LOW);
+    Serial.println("[Buttons] Power (GPIO33), Record (GPIO18) ready");
+}
 
-    Serial.println("[Buttons] Power (GPIO5), Record (GPIO18) initialized");
-    Serial.println("[Buttons] Power: long press 2s = sleep | Record: press = toggle");
+// ============== SENSOR SETUP ==============
+void setupSensors() {
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+
+    int thermRaw = analogRead(PIN_THERMISTOR);
+    Serial.printf("[Sensor] Thermistor: %d\n", thermRaw);
+    bool thermistorOK = (thermRaw > 100 && thermRaw < 4000);
+
+    Serial.print("[Sensor] MAX30102... ");
+    if (pulseOximeter.begin(Wire, I2C_SPEED_STANDARD)) {
+        Serial.println("OK");
+        max30102OK = true;
+        pulseOximeter.setup(60, 4, 2, 400, 411, 4096);
+        pulseOximeter.enableDIETEMPRDY();
+    } else {
+        Serial.println("FAILED");
+        max30102OK = false;
+    }
+
+    sensorsOK = thermistorOK && max30102OK;
+    Serial.printf("[Sensor] Status: %s\n", sensorsOK ? "ALL OK" : "ERROR");
 }
 
 // ============== BUTTON HANDLER ==============
 void handleButtons() {
     unsigned long now = millis();
-
-    // Read current button states (LOW = pressed due to pull-up)
     bool powerState = digitalRead(PIN_BTN_POWER);
     bool recordState = digitalRead(PIN_BTN_RECORD);
 
-    // ---- POWER BUTTON (long press detection) ----
+    // Power button (long press = sleep)
     if (powerState == LOW && btnPowerLastState == HIGH) {
-        // Button just pressed - start timing
         btnPowerPressTime = now;
         btnPowerPressed = true;
     } else if (powerState == LOW && btnPowerPressed) {
-        // Button still held - check for long press
         if (now - btnPowerPressTime >= LONG_PRESS_MS) {
-            Serial.println("[Button] Power long-press detected - entering deep sleep");
+            Serial.println("[Button] Power long-press - sleeping");
             enterDeepSleep();
         }
     } else if (powerState == HIGH && btnPowerLastState == LOW) {
-        // Button released
         btnPowerPressed = false;
     }
     btnPowerLastState = powerState;
 
-    // ---- RECORD BUTTON (single press with debounce) ----
+    // Record button (toggle - local backup control)
     if (recordState == LOW && btnRecordLastState == HIGH) {
-        // Button just pressed - start debounce
         btnRecordPressTime = now;
     } else if (recordState == HIGH && btnRecordLastState == LOW) {
-        // Button released - check if it was a valid press (debounced)
         if (now - btnRecordPressTime >= DEBOUNCE_MS) {
-            Serial.println("[Button] Record button pressed");
-            toggleRecording();
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
         }
     }
     btnRecordLastState = recordState;
 }
 
-// ============== TOGGLE RECORDING ==============
-void toggleRecording() {
-    if (isRecording) {
-        // Stop recording
-        isRecording = false;
-        unsigned long duration = millis() - sessionStartTime;
-        Serial.printf("[Session] Recording STOPPED (duration: %lu ms)\n", duration);
-
-        // Notify WebSocket clients
-        JsonDocument doc;
-        doc["type"] = "session_end";
-        doc["duration_ms"] = duration;
-        doc["source"] = "button";
-        String json;
-        serializeJson(doc, json);
-        webSocket.broadcastTXT(json);
-
-        // Visual feedback: quick blink
-        for (int i = 0; i < 3; i++) {
-            ledcWrite(PIN_LED, 255);
-            delay(100);
-            ledcWrite(PIN_LED, 0);
-            delay(100);
-        }
-    } else {
-        // Start recording
-        isRecording = true;
-        sessionStartTime = millis();
-        lastSampleTime = sessionStartTime;
-        Serial.println("[Session] Recording STARTED (via button)");
-
-        // Notify WebSocket clients
-        JsonDocument doc;
-        doc["type"] = "session_start";
-        doc["timestamp"] = sessionStartTime;
-        doc["source"] = "button";
-        String json;
-        serializeJson(doc, json);
-        webSocket.broadcastTXT(json);
-
-        // Visual feedback: fade up
-        for (int b = 0; b <= 255; b += 5) {
-            ledcWrite(PIN_LED, b);
-            delay(10);
-        }
-    }
-}
-
-// ============== DEEP SLEEP ==============
-void enterDeepSleep() {
-    // Stop any recording
-    if (isRecording) {
-        toggleRecording();
-    }
-
-    // Visual feedback: fade out
-    Serial.println("[Power] Entering deep sleep...");
-    for (int b = 255; b >= 0; b -= 5) {
-        ledcWrite(PIN_LED, b);
-        delay(20);
-    }
-    ledcWrite(PIN_LED, 0);
-
-    // Disconnect WiFi cleanly
-    webSocket.close();
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-
-    delay(100);
-
-    // Configure RTC GPIO for wake-up with pull-up enabled
-    rtc_gpio_pullup_en((gpio_num_t)PIN_BTN_POWER);
-    rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN_POWER);
-
-    // Enter deep sleep - will wake on GPIO5 (power button) going LOW
-    Serial.println("[Power] Sleeping now. Press power button to wake.");
-    esp_deep_sleep_start();
-}
-
 // ============== LED UPDATE ==============
 void updateLED() {
     if (!sensorsOK) {
-        // Sensors not OK: LED OFF
         ledcWrite(PIN_LED, 0);
         return;
     }
 
-    // Read thermistor and smooth it
+    // Not connected: slow pulse to show it's alive
+    if (!deviceConnected) {
+        float pulse = (sin(millis() * 0.002) + 1.0) * 0.5;  // 0-1, ~0.3Hz
+        ledcWrite(PIN_LED, (int)(pulse * 100));  // Max 100 when idle
+        return;
+    }
+
+    // Connected: breath-reactive
     int thermRaw = analogRead(PIN_THERMISTOR);
     thermSmoothed = (SMOOTHING * thermRaw) + ((1.0 - SMOOTHING) * thermSmoothed);
-
-    // Slow-moving baseline (adapts over ~10 seconds)
     thermBaseline = (0.005 * thermSmoothed) + (0.995 * thermBaseline);
 
-    // Calculate deviation from baseline
     float deviation = thermSmoothed - thermBaseline;
-
-    // Amplify the deviation for sensitivity
-    // Breath typically causes ±10-30 ADC units change
-    // We want this to map to full LED range
     float amplified = deviation * SENSITIVITY;
-
-    // Map to 0-1 range centered at 0.5
-    // Positive deviation (exhale/warm) = brighter
-    // Negative deviation (inhale/cool) = dimmer
     float normalized = 0.5 + (amplified / 100.0);
     normalized = constrain(normalized, 0.0, 1.0);
 
-    // Apply gamma correction for more natural brightness
-    float gamma = 1.8;  // Slightly less aggressive gamma
-    float corrected = pow(normalized, gamma);
-
+    float corrected = pow(normalized, 1.8);
     int brightness = (int)(corrected * 255);
-
-    // Minimum brightness so LED doesn't turn fully off
     if (brightness < 10) brightness = 10;
 
-    // Recording indicator: subtle pulse overlay (2Hz sine wave, ±30 brightness)
-    if (isRecording) {
-        float pulse = sin(millis() * 0.0125) * 30;  // 2Hz oscillation
+    // Recording: add pulse overlay
+    if (isRecording && !isPaused) {
+        float pulse = sin(millis() * 0.0125) * 30;
         brightness = constrain(brightness + (int)pulse, 10, 255);
+    }
+
+    // Paused: fast blink
+    if (isPaused) {
+        brightness = (millis() % 500 < 250) ? brightness : 20;
     }
 
     ledcWrite(PIN_LED, brightness);
 }
 
-// ============== SENSOR SETUP ==============
-void setupSensors() {
-    // Configure ADC
-    analogReadResolution(12);  // 12-bit ADC (0-4095)
-    analogSetAttenuation(ADC_11db);  // Full 0-3.3V range
-
-    // Test thermistor reading
-    int thermRaw = analogRead(PIN_THERMISTOR);
-    Serial.printf("[Sensor] Thermistor raw: %d (expected ~2000 at room temp)\n", thermRaw);
-
-    // Check if thermistor is connected (should be between 100-4000)
-    bool thermistorOK = (thermRaw > 100 && thermRaw < 4000);
-
-    // Initialize MAX30102
-    Serial.print("[Sensor] Initializing MAX30102... ");
-    if (pulseOximeter.begin(Wire, I2C_SPEED_STANDARD)) {
-        Serial.println("OK");
-        max30102OK = true;
-
-        // Configure for pulse oximetry
-        pulseOximeter.setup(
-            60,    // LED brightness (0-255)
-            4,     // Sample average (1, 2, 4, 8, 16, 32)
-            2,     // LED mode (1=Red, 2=Red+IR, 3=Red+IR+Green)
-            400,   // Sample rate (50-3200)
-            411,   // Pulse width (69, 118, 215, 411)
-            4096   // ADC range (2048, 4096, 8192, 16384)
-        );
-
-        pulseOximeter.enableDIETEMPRDY();  // Enable die temperature reading
-    } else {
-        Serial.println("FAILED - check wiring!");
-        max30102OK = false;
+// ============== START RECORDING ==============
+void startRecording() {
+    if (!sensorsOK) {
+        Serial.println("[Session] Cannot start - sensors not OK");
+        return;
     }
 
-    // Set overall sensor status
-    sensorsOK = thermistorOK && max30102OK;
-    Serial.printf("[Sensor] Status: %s\n", sensorsOK ? "ALL OK - LED ON" : "ISSUES - LED OFF");
+    isRecording = true;
+    isPaused = false;
+    sessionStartTime = millis();
+    lastSampleTime = sessionStartTime;
+    Serial.println("[Session] STARTED");
+
+    // Visual feedback
+    for (int b = 0; b <= 255; b += 10) {
+        ledcWrite(PIN_LED, b);
+        delay(5);
+    }
 }
 
-// ============== WEBSOCKET EVENT HANDLER ==============
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
-    switch (type) {
-        case WStype_DISCONNECTED:
-            Serial.printf("[WS] Client #%u disconnected\n", num);
-            connectedClients--;
-            if (connectedClients == 0 && isRecording) {
-                isRecording = false;
-                Serial.println("[Session] Auto-stopped (no clients)");
-            }
-            break;
+// ============== STOP RECORDING ==============
+void stopRecording() {
+    if (!isRecording) return;
 
-        case WStype_CONNECTED:
-            {
-                IPAddress ip = webSocket.remoteIP(num);
-                Serial.printf("[WS] Client #%u connected from %s\n", num, ip.toString().c_str());
-                connectedClients++;
+    unsigned long duration = millis() - sessionStartTime;
+    isRecording = false;
+    isPaused = false;
+    Serial.printf("[Session] STOPPED (duration: %lu ms)\n", duration);
 
-                // Send welcome message with device info
-                JsonDocument doc;
-                doc["type"] = "info";
-                doc["device"] = "ESP32_WROOM32";
-                doc["sample_rate"] = SAMPLE_RATE_HZ;
-                doc["sensors"] = "thermistor,max30102";
-
-                String json;
-                serializeJson(doc, json);
-                webSocket.sendTXT(num, json);
-            }
-            break;
-
-        case WStype_TEXT:
-            {
-                String msg = String((char*)payload);
-                msg.trim();
-                msg.toLowerCase();
-
-                if (msg == "start") {
-                    isRecording = true;
-                    sessionStartTime = millis();
-                    lastSampleTime = sessionStartTime;
-                    Serial.println("[Session] Recording STARTED");
-
-                    // Send start confirmation
-                    JsonDocument doc;
-                    doc["type"] = "session_start";
-                    doc["timestamp"] = sessionStartTime;
-                    String json;
-                    serializeJson(doc, json);
-                    webSocket.broadcastTXT(json);
-
-                } else if (msg == "stop") {
-                    isRecording = false;
-                    unsigned long duration = millis() - sessionStartTime;
-                    Serial.printf("[Session] Recording STOPPED (duration: %lu ms)\n", duration);
-
-                    // Send stop confirmation
-                    JsonDocument doc;
-                    doc["type"] = "session_end";
-                    doc["duration_ms"] = duration;
-                    String json;
-                    serializeJson(doc, json);
-                    webSocket.broadcastTXT(json);
-
-                } else if (msg == "ping") {
-                    webSocket.sendTXT(num, "{\"type\":\"pong\"}");
-                }
-            }
-            break;
+    // Visual feedback
+    for (int i = 0; i < 3; i++) {
+        ledcWrite(PIN_LED, 255);
+        delay(100);
+        ledcWrite(PIN_LED, 0);
+        delay(100);
     }
 }
 
 // ============== SEND SENSOR DATA ==============
 void sendSensorData() {
-    // Calculate timestamp relative to session start
-    unsigned long timestamp = millis() - sessionStartTime;
+    if (!pSensorDataChar) return;
 
-    // Read thermistor
-    int thermistorRaw = analogRead(PIN_THERMISTOR);
+    SensorPacket packet;
+    packet.timestamp_ms = millis() - sessionStartTime;
+    packet.thermistor = (uint16_t)analogRead(PIN_THERMISTOR);
+    packet.ir_value = pulseOximeter.getIR();
+    packet.red_value = pulseOximeter.getRed();
 
-    // Read MAX30102
-    uint32_t irValue = pulseOximeter.getIR();
-    uint32_t redValue = pulseOximeter.getRed();
-
-    // Build JSON message
-    JsonDocument doc;
-    doc["t"] = timestamp;           // timestamp in ms
-    doc["th"] = thermistorRaw;      // thermistor raw ADC (0-4095)
-    doc["ir"] = irValue;            // MAX30102 IR value
-    doc["rd"] = redValue;           // MAX30102 Red value
-
-    String json;
-    serializeJson(doc, json);
-    webSocket.broadcastTXT(json);
+    pSensorDataChar->setValue((uint8_t*)&packet, sizeof(SensorPacket));
+    pSensorDataChar->notify();
 }
 
-// ============== THERMISTOR TEMPERATURE CALCULATION ==============
-float readThermistorTemp() {
-    int raw = analogRead(PIN_THERMISTOR);
+// ============== SEND STATUS ==============
+void sendStatus() {
+    if (!pStatusChar) return;
 
-    // Convert ADC value to resistance
-    float resistance = SERIES_RESISTOR / ((4095.0 / raw) - 1.0);
+    StatusPacket status;
+    status.battery_percent = 100;  // TODO: Read actual battery
+    status.sensors_ok = sensorsOK ? 1 : 0;
+    status.is_recording = isRecording ? (isPaused ? 2 : 1) : 0;
+    status.reserved = 0;
 
-    // Steinhart-Hart equation (simplified B-parameter version)
-    float steinhart = resistance / THERMISTOR_NOMINAL;     // (R/Ro)
-    steinhart = log(steinhart);                            // ln(R/Ro)
-    steinhart /= B_COEFFICIENT;                            // 1/B * ln(R/Ro)
-    steinhart += 1.0 / (TEMP_NOMINAL + 273.15);           // + (1/To)
-    steinhart = 1.0 / steinhart;                          // Invert
-    steinhart -= 273.15;                                   // Convert to Celsius
+    pStatusChar->setValue((uint8_t*)&status, sizeof(StatusPacket));
+    pStatusChar->notify();
+}
 
-    return steinhart;
+// ============== DEEP SLEEP ==============
+void enterDeepSleep() {
+    if (isRecording) {
+        stopRecording();
+    }
+
+    Serial.println("[Power] Entering deep sleep...");
+
+    // Fade out LED
+    for (int b = 255; b >= 0; b -= 5) {
+        ledcWrite(PIN_LED, b);
+        delay(20);
+    }
+
+    // Stop BLE
+    NimBLEDevice::deinit(true);
+
+    delay(100);
+
+    rtc_gpio_pullup_en((gpio_num_t)PIN_BTN_POWER);
+    rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN_POWER);
+
+    Serial.println("[Power] Sleeping. Press power button to wake.");
+    esp_deep_sleep_start();
 }
