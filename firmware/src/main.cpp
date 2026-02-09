@@ -349,7 +349,9 @@ void setupSensors() {
     if (pulseOximeter.begin(Wire, I2C_SPEED_STANDARD)) {
         Serial.println("OK");
         max30102OK = true;
-        pulseOximeter.setup(60, 4, 2, 400, 411, 4096);
+        // powerLevel=60, sampleAvg=4, ledMode=2(Red+IR), sampleRate=400,
+        // pulseWidth=411(18-bit), adcRange=16384(max range, prevents saturation)
+        pulseOximeter.setup(60, 4, 2, 400, 411, 16384);
         pulseOximeter.enableDIETEMPRDY();
     } else {
         Serial.println("FAILED");
