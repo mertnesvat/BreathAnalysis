@@ -1,10 +1,14 @@
 /*
- * Breath Analysis Firmware for ESP32 WROOM-32 (HW-394)
+ * Breath Analysis Firmware
  * BLE Version - For Flutter App Integration
  *
+ * Supports:
+ *   - Seeed XIAO ESP32S3 (breadboard prototype)
+ *   - ESP32 WROOM-32 (PCB prototype)
+ *
  * Sensors:
- *   - Thermistor (NTC 10K) on GPIO32 - nasal airflow temperature
- *   - MAX30102 on I2C (SDA=GPIO21, SCL=GPIO22) - heart rate & SpO2
+ *   - Thermistor (NTC 10K) - nasal airflow temperature
+ *   - MAX30102 on I2C - heart rate & SpO2
  *
  * Communication: BLE (NimBLE) - connects to Flutter meditation app
  * Data rate: 20Hz sensor streaming when recording
@@ -15,6 +19,7 @@
 #include <Wire.h>
 #include "MAX30105.h"
 #include "driver/rtc_io.h"
+#include "esp_sleep.h"
 
 // ============== BLE CONFIGURATION ==============
 #define DEVICE_NAME "BreathMonitor"
@@ -33,10 +38,21 @@ const int SAMPLE_INTERVAL_MS = 1000 / SAMPLE_RATE_HZ;
 const int STATUS_INTERVAL_MS = 1000;  // Send status every 1 second
 
 // ============== PIN DEFINITIONS ==============
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+// Seeed XIAO ESP32S3 pinout
+const int PIN_THERMISTOR = 1;   // A0/D0 (GPIO1) - ADC
+const int PIN_LED = 3;          // D2 (GPIO3) - direct drive LED
+const int PIN_BTN_POWER = 4;   // D3 (GPIO4) - power/sleep button
+const int PIN_SDA = 5;         // D4 (GPIO5) - I2C SDA
+const int PIN_SCL = 6;         // D5 (GPIO6) - I2C SCL
+#else
+// ESP32 WROOM-32 (HW-394) pinout
 const int PIN_THERMISTOR = 32;  // GPIO32 (ADC1_CH4)
-const int PIN_LED = 27;         // GPIO27 - status LED via transistor
+const int PIN_LED = 27;         // GPIO27 - LED via NPN transistor
 const int PIN_BTN_POWER = 33;   // GPIO33 (RTC_GPIO8) - Power/sleep
-const int PIN_BTN_RECORD = 18;  // GPIO18 - Record toggle (local backup)
+const int PIN_SDA = 21;        // Default I2C SDA
+const int PIN_SCL = 22;        // Default I2C SCL
+#endif
 
 // ============== BLE COMMAND CODES ==============
 const uint8_t CMD_START = 0x01;
@@ -73,9 +89,7 @@ const int LED_RESOLUTION = 8;
 const unsigned long DEBOUNCE_MS = 50;
 const unsigned long LONG_PRESS_MS = 2000;
 unsigned long btnPowerPressTime = 0;
-unsigned long btnRecordPressTime = 0;
 bool btnPowerLastState = HIGH;
-bool btnRecordLastState = HIGH;
 bool btnPowerPressed = false;
 
 // Breath LED tracking
@@ -117,6 +131,13 @@ void sendStatus();
 void startRecording();
 void stopRecording();
 void enterDeepSleep();
+
+// Board info for serial output
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#define BOARD_NAME "XIAO ESP32S3"
+#else
+#define BOARD_NAME "ESP32 WROOM-32"
+#endif
 
 // ============== BLE CALLBACKS ==============
 class ServerCallbacks : public NimBLEServerCallbacks {
@@ -187,10 +208,11 @@ void setup() {
 
     Serial.println("\n========================================");
     Serial.println("  Breath Analysis - BLE Edition");
+    Serial.println("  Board: " BOARD_NAME);
     Serial.println("  Firmware: " FIRMWARE_VERSION);
     Serial.println("========================================\n");
 
-    Wire.begin();
+    Wire.begin(PIN_SDA, PIN_SCL);
 
     setupLED();
     setupButtons();
@@ -303,9 +325,15 @@ void setupLED() {
 // ============== BUTTON SETUP ==============
 void setupButtons() {
     pinMode(PIN_BTN_POWER, INPUT_PULLUP);
-    pinMode(PIN_BTN_RECORD, INPUT_PULLUP);
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    // ESP32-S3: use ext1 wakeup (ext0 not available)
+    esp_sleep_enable_ext1_wakeup(1ULL << PIN_BTN_POWER, ESP_EXT1_WAKEUP_ANY_LOW);
+    Serial.printf("[Buttons] Power (GPIO%d) ready\n", PIN_BTN_POWER);
+#else
     esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BTN_POWER, LOW);
-    Serial.println("[Buttons] Power (GPIO33), Record (GPIO18) ready");
+    Serial.println("[Buttons] Power (GPIO33) ready");
+#endif
 }
 
 // ============== SENSOR SETUP ==============
@@ -336,7 +364,6 @@ void setupSensors() {
 void handleButtons() {
     unsigned long now = millis();
     bool powerState = digitalRead(PIN_BTN_POWER);
-    bool recordState = digitalRead(PIN_BTN_RECORD);
 
     // Power button (long press = sleep)
     if (powerState == LOW && btnPowerLastState == HIGH) {
@@ -351,20 +378,6 @@ void handleButtons() {
         btnPowerPressed = false;
     }
     btnPowerLastState = powerState;
-
-    // Record button (toggle - local backup control)
-    if (recordState == LOW && btnRecordLastState == HIGH) {
-        btnRecordPressTime = now;
-    } else if (recordState == HIGH && btnRecordLastState == LOW) {
-        if (now - btnRecordPressTime >= DEBOUNCE_MS) {
-            if (isRecording) {
-                stopRecording();
-            } else {
-                startRecording();
-            }
-        }
-    }
-    btnRecordLastState = recordState;
 }
 
 // ============== LED UPDATE ==============
@@ -494,9 +507,17 @@ void enterDeepSleep() {
 
     delay(100);
 
+    // Configure RTC GPIO for wake
     rtc_gpio_pullup_en((gpio_num_t)PIN_BTN_POWER);
     rtc_gpio_pulldown_dis((gpio_num_t)PIN_BTN_POWER);
 
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    esp_sleep_enable_ext1_wakeup(1ULL << PIN_BTN_POWER, ESP_EXT1_WAKEUP_ANY_LOW);
+#else
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_BTN_POWER, LOW);
+#endif
+
     Serial.println("[Power] Sleeping. Press power button to wake.");
+    Serial.flush();
     esp_deep_sleep_start();
 }

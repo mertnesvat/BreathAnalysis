@@ -9,7 +9,7 @@ A meditation quality measurement system using ESP32 and physiological sensors. C
 ## Hardware Setup
 
 ### Microcontroller
-- **ESP32 WROOM-32** (HW-394 DevKit)
+- **ESP32-WROOM-32E-N4** (SMD module for custom PCB)
 - Dual-core, WiFi/BLE capable
 - 12-bit ADC
 
@@ -19,14 +19,58 @@ A meditation quality measurement system using ESP32 and physiological sensors. C
 | Thermistor (NTC 10K) | GPIO32 (ADC1_CH4) | Nasal airflow temperature (breath detection) |
 | MAX30102 | I2C (SDA=21, SCL=22) | Heart rate, SpO2, HRV |
 | Status LED | GPIO27 (via NPN transistor) | Breath-reactive feedback |
-| Power Button | GPIO33 (RTC_GPIO8) | Sleep/wake control |
-| Record Button | GPIO18 | Manual recording toggle |
+
+### Control Buttons
+| Button | Pin | Function |
+|--------|-----|----------|
+| RST | EN | Hardware reset (pulls EN low) |
+| PWR | GPIO33 (RTC_GPIO8) | Sleep/wake control |
+| BOOT | GPIO0 | Bootloader mode (hold during reset to flash) |
 
 ### Power System
-- **18650 battery** with casing
-- **TP4056** charging module
-- Battery voltage: 3.7-4.2V
-- ESP32 onboard regulator provides 3.3V
+- **18650 battery** (BH-18650-A1AJ006 holder)
+- **TP4056** Li-ion charger IC (1A charge current)
+- **AMS1117-3.3** voltage regulator (SOT-89)
+- **USB-C** connector (TYPE-C-31-M-12) for charging
+- Battery voltage: 3.7-4.2V (VBAT)
+- Regulated output: 3.3V
+
+### PCB Power Circuit
+```
+USB-C (5V) ──┬── TP4056 ── 18650 Battery (3.7-4.2V)
+             │                    │
+             └── C6 (10µF)        ├── C7 (10µF)
+                                  │
+                            AMS1117-3.3
+                                  │
+                            3.3V Rail ── C5 (10µF)
+                                  │
+                               ESP32
+```
+
+### USB-C Configuration
+- CC1 & CC2 pins: 5.1kΩ pull-down resistors (R7, R8)
+- Identifies device as USB-C sink for 5V power
+- VBUS pins (A4B9, B4A9) → TP4056 VCC
+- GND pins (A1B12, B1A12) → Common ground
+
+### TP4056 Charging Circuit
+| Pin | Connection | Purpose |
+|-----|------------|---------|
+| VCC (4, 8) | USB VBUS | 5V input |
+| BAT (5) | Battery+ | Charge output |
+| GND (1, 3, 9) | GND | Ground + thermal pad |
+| PROG (2) | R6 (1.2kΩ) to GND | Sets charge current (~1A) |
+| CHRG# (7) | LED3 (Red) via R9 | Charging indicator |
+| STDBY# (6) | LED5 (Green) via R10 | Charge complete indicator |
+
+### ESP32 Support Circuits
+| Component | Value | Connection | Purpose |
+|-----------|-------|------------|---------|
+| R1 | 10kΩ | EN → 3.3V | EN pull-up |
+| R2 | 10kΩ | GPIO33 → 3.3V | PWR button pull-up |
+| R3 | 10kΩ | GPIO0 → 3.3V | BOOT button pull-up |
+| C1 | 100nF | EN → GND | EN noise filter |
 
 **Known issue:** MAX30102 may fail to initialize on battery power if voltage is marginal. USB power (5V) works reliably.
 
@@ -109,9 +153,15 @@ struct StatusPacket {
 | Paused | Fast blink |
 
 ### Deep Sleep
-- Wake source: GPIO33 (power button) on LOW
-- RTC GPIO pullup enabled for wake detection
+- Wake source: GPIO33 (PWR button) on LOW
+- External 10kΩ pull-up (R2) keeps GPIO33 HIGH when not pressed
+- RTC GPIO configured for wake detection
 - BLE deinit before sleep
+
+### Bootloader Mode
+- Hold BOOT button → Press RST → Release RST → Release BOOT
+- GPIO0 LOW during reset enters download mode for firmware flashing
+- Normal boot: GPIO0 HIGH (via R3 pull-up)
 
 ## Testing
 
@@ -172,8 +222,16 @@ BreathAnalysis/
    - Reset device
 
 3. **Deep sleep won't wake**
-   - Verify button wired between GPIO33 and GND
-   - Check RTC GPIO pullup is enabled
+   - Verify PWR button wired between GPIO33 and GND
+   - Check RTC GPIO pullup is enabled (R2 provides external pull-up)
+
+4. **Can't enter bootloader mode**
+   - Hold BOOT button, press RST, release RST, then release BOOT
+   - GPIO0 must be LOW during EN rising edge
+
+5. **USB-C not recognized as power source**
+   - Verify CC1/CC2 have 5.1kΩ pull-down resistors (R7, R8)
+   - Check VBUS continuity from USB-C to TP4056
 
 ## Integration with Flutter App
 
