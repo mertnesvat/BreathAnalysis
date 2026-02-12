@@ -20,6 +20,7 @@
 #include "MAX30105.h"
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
+#include <SensirionI2cSht4x.h>
 
 // ============== BLE CONFIGURATION ==============
 #define DEVICE_NAME "BreathMonitor"
@@ -43,8 +44,10 @@ const int STATUS_INTERVAL_MS = 1000;  // Send status every 1 second
 const int PIN_THERMISTOR = 1;   // A0/D0 (GPIO1) - ADC
 const int PIN_LED = 3;          // D2 (GPIO3) - direct drive LED
 const int PIN_BTN_POWER = 4;   // D3 (GPIO4) - power/sleep button
-const int PIN_SDA = 5;         // D4 (GPIO5) - I2C SDA
-const int PIN_SCL = 6;         // D5 (GPIO6) - I2C SCL
+const int PIN_SDA = 5;         // D4 (GPIO5) - I2C SDA (MAX30102)
+const int PIN_SCL = 6;         // D5 (GPIO6) - I2C SCL (MAX30102)
+const int PIN_SDA2 = 7;       // D8 (GPIO7) - I2C SDA2 (SHT40)
+const int PIN_SCL2 = 8;       // D9 (GPIO8) - I2C SCL2 (SHT40)
 #else
 // ESP32 WROOM-32 (HW-394) pinout
 const int PIN_THERMISTOR = 32;  // GPIO32 (ADC1_CH4)
@@ -62,6 +65,7 @@ const uint8_t CMD_RESUME = 0x04;
 
 // ============== GLOBAL OBJECTS ==============
 MAX30105 pulseOximeter;
+SensirionI2cSht4x sht40;
 NimBLEServer* pServer = nullptr;
 NimBLECharacteristic* pSensorDataChar = nullptr;
 NimBLECharacteristic* pStatusChar = nullptr;
@@ -80,9 +84,16 @@ unsigned long lastStatusTime = 0;
 // Sensor state
 bool sensorsOK = false;
 bool max30102OK = false;
+bool sht40OK = false;
+
+// SHT40 cached values (read at 1Hz, sent in every 20Hz packet)
+float cachedTemperature = 0.0;
+float cachedHumidity = 0.0;
+unsigned long lastSHT40Read = 0;
+const unsigned long SHT40_INTERVAL_MS = 1000;
 
 // LED state
-const int LED_FREQ = 5000;
+const int LED_FREQ = 200;  // Low freq: easier for caps to filter, still flicker-free
 const int LED_RESOLUTION = 8;
 
 // Button state
@@ -99,14 +110,16 @@ const float SMOOTHING = 0.3;
 const float SENSITIVITY = 8.0;
 
 // ============== DATA PACKET STRUCTURE ==============
-// Binary packet: 14 bytes (fits in BLE MTU)
+// Binary packet: 18 bytes (fits in BLE MTU, 20-byte payload limit)
 #pragma pack(push, 1)
 struct SensorPacket {
     uint32_t timestamp_ms;  // 4 bytes
     uint16_t thermistor;    // 2 bytes (ADC 0-4095)
     uint32_t ir_value;      // 4 bytes
     uint32_t red_value;     // 4 bytes
-};  // Total: 14 bytes
+    int16_t  temperature;   // 2 bytes (°C × 100, e.g. 2350 = 23.50°C)
+    uint16_t humidity;      // 2 bytes (%RH × 100, e.g. 4520 = 45.20%)
+};  // Total: 18 bytes
 #pragma pack(pop)
 
 // Status packet: 4 bytes
@@ -126,6 +139,7 @@ void setupLED();
 void setupButtons();
 void updateLED();
 void handleButtons();
+void updateSHT40();
 void sendSensorData();
 void sendStatus();
 void startRecording();
@@ -358,8 +372,30 @@ void setupSensors() {
         max30102OK = false;
     }
 
+    // Initialize SHT40 on second I2C bus
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    Serial.print("[Sensor] SHT40... ");
+    Wire1.begin(PIN_SDA2, PIN_SCL2);
+    sht40.begin(Wire1, SHT40_I2C_ADDR_44);
+
+    float testTemp, testHum;
+    uint16_t sht40Error = sht40.measureHighPrecision(testTemp, testHum);
+    if (sht40Error == 0) {
+        Serial.println("OK");
+        sht40OK = true;
+        cachedTemperature = testTemp;
+        cachedHumidity = testHum;
+        Serial.printf("  Temp: %.2f°C, RH: %.2f%%\n", testTemp, testHum);
+    } else {
+        Serial.printf("FAILED (error: %d)\n", sht40Error);
+        sht40OK = false;
+    }
+#endif
+
     sensorsOK = thermistorOK && max30102OK;
-    Serial.printf("[Sensor] Status: %s\n", sensorsOK ? "ALL OK" : "ERROR");
+    Serial.printf("[Sensor] Status: %s (SHT40: %s)\n",
+        sensorsOK ? "ALL OK" : "ERROR",
+        sht40OK ? "OK" : "N/A");
 }
 
 // ============== BUTTON HANDLER ==============
@@ -462,15 +498,37 @@ void stopRecording() {
     }
 }
 
+// ============== UPDATE SHT40 CACHE ==============
+void updateSHT40() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    if (!sht40OK) return;
+
+    unsigned long now = millis();
+    if (now - lastSHT40Read < SHT40_INTERVAL_MS) return;
+
+    lastSHT40Read = now;
+    float temp, hum;
+    uint16_t error = sht40.measureHighPrecision(temp, hum);
+    if (error == 0) {
+        cachedTemperature = temp;
+        cachedHumidity = hum;
+    }
+#endif
+}
+
 // ============== SEND SENSOR DATA ==============
 void sendSensorData() {
     if (!pSensorDataChar) return;
+
+    updateSHT40();
 
     SensorPacket packet;
     packet.timestamp_ms = millis() - sessionStartTime;
     packet.thermistor = (uint16_t)analogRead(PIN_THERMISTOR);
     packet.ir_value = pulseOximeter.getIR();
     packet.red_value = pulseOximeter.getRed();
+    packet.temperature = (int16_t)(cachedTemperature * 100.0f);
+    packet.humidity = (uint16_t)(cachedHumidity * 100.0f);
 
     pSensorDataChar->setValue((uint8_t*)&packet, sizeof(SensorPacket));
     pSensorDataChar->notify();
