@@ -1,99 +1,143 @@
 # Current State - Breath Analysis System
 
-*Last updated: 2026-02-11*
+*Last updated: 2026-02-14*
 
 ## What Works
-- **Hardware**: XIAO ESP32S3 soldered prototype with new casing
-- **Firmware**: BLE advertising as `BreathMonitor`, 20Hz sensor streaming, deep sleep — builds and uploads clean
-- **MAX30102**: ADC range fixed (4096 → 16384), reads ~53K-76K IR with finger, heartbeat visible in raw data
-- **Thermistor**: Reads ~1800-2014 at boot (valid range), breath patterns visible in raw data
-- **App → Firebase pipeline**: Raw samples uploaded as gzip, Cloud Function triggered
-- **BLE deduplication**: FIXED — App-side dedup in `device_provider.dart` + Cloud Function safety net
-- **Breath count**: FIXED — 15-second moving average baseline subtraction
-- **HRV signal processing**: FIXED — 2.5s moving average DC removal, prominence threshold 0.3
+- **Hardware**: XIAO ESP32S3 soldered prototype with thermistor + MAX30102 + BMP280
+- **Firmware**: BLE advertising as `BreathMonitor`, 20Hz sensor streaming, deep sleep, BLE disconnect diagnostics
+- **BMP280**: Pressure + temperature on Wire1 (D8/D9), reads ~996 hPa, 0.18 Pa resolution — **confirmed as primary breath sensor**
+- **MAX30102**: ADC range fixed (4096 → 16384), reads ~53K-76K IR with finger
+- **Thermistor**: Reads ~1600-1900, breath patterns visible but **degrades to 31% by minute 14** — secondary/backup only
+- **BLE packet**: 20 bytes — [ts 4B, therm 2B, IR 4B, Red 4B, temp 2B, hum 2B, pressure_delta 2B]
+- **Flutter debug screen**: Real-time waveforms for all signals (thermistor, IR, pressure, humidity, temp)
+- **App → Firebase pipeline**: Raw samples uploaded as gzip (v3 format, 7 fields per sample)
+- **BLE stability**: Firmware now requests 15-30ms connection interval + 4s supervision timeout, blocks sleep during recording
 
-## Previous Issues (All Resolved)
-- ~~7x BLE sample duplication~~ — Fixed with dedup
-- ~~Breath count wildly wrong (120 vs ~12)~~ — Fixed with baseline subtraction
-- ~~HRV metrics all 0~~ — Fixed with proper signal processing
-- ~~MAX30102 ADC saturation~~ — Fixed with adcRange=16384
-- ~~LED optical crosstalk destroying HRV~~ — Root cause identified (see docs/PowerNoiseAnalysis.md)
+## Sensor Configuration
 
-## Current Focus: Hardware Casing & Sensor Stability
+| Sensor | I2C Bus | Address | Pin | Signals |
+|--------|---------|---------|-----|---------|
+| Thermistor NTC 10K | ADC | — | GPIO1 (A0) | Nasal airflow temperature |
+| MAX30102 | Wire | 0x57 | GPIO5/6 (D4/D5) | IR + Red (HRV, SpO2) |
+| BMP280 | Wire1 | 0x76 | GPIO7/8 (D8/D9) | Pressure + Temperature |
 
-### New Casing
-- Built a new physical casing for the device
-- Goal: keep thermistor stable near nostril for full session duration
-- First test (1-min) had thermistor wiring issue (ADC reading 0-18) — voltage divider connection was loose
-- After fixing connection, firmware boots with `Thermistor: 2014` and `ALL OK`
-- **Currently recording a 10-minute test session** with the new casing
+**Note**: The BMP280 breakout was sold as "BME280" but chip ID is 0x58 (BMP280), not 0x60 (BME280). No humidity sensor. Uses `Adafruit BMP280 Library`. CSB must be tied to VCC for I2C mode, SDO to GND for address 0x76.
 
-### Thermistor Signal Degradation Problem
-Analyzed a 15-minute meditation session — key finding: **thermistor signal degrades 10x over 15 minutes**.
+## Decision: BMP280 Pressure Is the Primary Breath Sensor
 
-| Time Window | Signal Strength (std) | Quality |
-|-------------|----------------------|---------|
-| 0-3 min     | 20.9                 | Excellent |
-| 3-6 min     | 12.2                 | Good |
-| 6-9 min     | 9.2                  | Moderate |
-| 9-12 min    | 5.3                  | Weak |
-| 12-15 min   | 2.5                  | Nearly flat — unreliable |
+Validated across **three recording sessions** totaling 17 minutes of continuous data (7 min + 5 min + 5 min):
 
-**Root cause is partially physical sensor drift** (not just thermal):
-- Baseline drop paused at minutes 4-7 (inconsistent with pure thermal drift)
-- HR spiked during that period (user noticed sensor moving, got anxious)
-- Breath amplitude dropped faster than thermal models predict
-- See analysis plots in `~/Downloads/15min_*.png`
+### 7-minute all-sensors session (`allSensors7Min.gz`)
 
-### Thermistor Type Research
-Detailed findings in `docs/ThermistorReplacementFindings.md`. Summary:
-- **Glass bead** (τ=0.5-1.5s): Best for breath, but fragile — **keep using this**
-- **SMD 0402 chip** (τ≈3s): 2.5x weaker signal but robust — viable backup
-- **Metal case / epoxy bead** (τ=5-15s): Too slow for breath detection
-- **Recommendation**: Protect glass bead with strain relief (silicone wire + hot glue anchor)
+| Metric | Thermistor | Pressure (BMP280) | IR (MAX30102) |
+|--------|-----------|-------------------|---------------|
+| Peaks detected | 73 | 127 | 4 (unusable) |
+| Breath rate | 10.4 br/min | 18.0 br/min | — |
+| Signal at min 0 | 38.8 ADC | 3.7 Pa | — |
+| Signal at min 6 | 12.3 ADC | 2.0 Pa | — |
+| **Retained at end** | **32%** | **55%** | — |
 
-## 15-Minute Session Analysis Results
+- Pressure rate (18.0 br/min = 3.34s/breath) matches expected 3.3s normal breathing
+- Threshold sweep (0.10x-0.50x std) gives 124-129 peaks — signal is clean and robust
+- 67% of pressure peaks match a thermistor peak (±2s), but pressure catches 40+ extra breaths thermistor misses
+- Breath waveform shape consistent from start to end — no sensor degradation
+- Temperature drift: +8.94°C over 7 min (23.6→32.5°C) — explains thermistor failure but doesn't affect pressure
 
-**Data quality**: Perfect — 17,995 samples, zero gaps, 100% finger contact, no ADC saturation.
+### Extended sessions: minutes 5-15 (`5-10MinSnapshot.gz` + `10-15MinSnapshot`)
 
-### Breath Metrics
-- 192 breaths detected, 12.8 br/min average
-- Rate progression: 9.0 → 13.7 → 14.0 → 14.3 → 13.0 br/min (5-min windows)
-- Regularity: 0.636 (moderate)
-- ⚠️ Late-session detection unreliable due to weak signal — overcounting from noise
+| Minute | Thermistor Signal | Pressure Signal |
+|--------|------------------|----------------|
+| 5 (baseline) | 100% | 100% |
+| 8 | 34% | 123% |
+| 10 | 66% | 118% |
+| 12 | 33% | 101% |
+| 14 | 31% | 87% |
 
-### HRV Metrics
-- 906 heartbeat peaks, 863 valid RR intervals (90.5% coverage)
-- Avg HR: 62.9 BPM, stable across session (62-66 BPM in 3-min windows)
-- SDNN: 126.8ms, RMSSD: 176.3ms — **suspiciously high**, likely inflated by noise
-- 21% of consecutive RR intervals had >300ms jumps (noise contamination)
-- True RMSSD probably closer to 40-80ms after proper outlier rejection
+- Pressure maintains **87% of signal at minute 14** while thermistor drops to **31%**
+- Pressure variation (64-170%) reflects actual breathing pattern changes, not sensor degradation
+- Sneeze event clearly captured in the data (visible gap in breath pattern)
+- Breath hold experiment at minute 12: not a perfectly clean gap due to BMP280 noise floor (~1 Pa), but rolling amplitude visibly dips
 
-### HR Timeline (shows panic event)
-- Minutes 0-3: HR drops 67 → 58 BPM (relaxation)
-- Minutes 3-5: HR jumps to 65 BPM (noticed sensor moving, anxiety)
-- Minutes 5-9: Settles back to ~60 BPM
-- Minute 12: Another spike to 73 BPM (noticed sensor again?)
+### Why pressure works and thermistor fails
+
+- **Thermistor** relies on ΔT between inhaled (cool) and exhaled (warm) air. As the sensor area warms to body temperature (+9°C in 7 min), ΔT vanishes.
+- **Pressure** relies on airflow dynamics (Bernoulli effect). Air movement creates pressure changes regardless of temperature. Signal amplitude is physics-based, not temperature-dependent.
+
+### Pressure signal characteristics
+- Typical breath amplitude: 2-4 Pa (AC component after baseline removal)
+- Noise floor: ~1 Pa (sensor + environmental)
+- SNR: 5-8x during normal breathing
+- Breath hold detection: possible via rolling amplitude metric, not individual peak detection
+- Response time: milliseconds (same as thermistor)
+
+Analysis graphs: `analysis/all_sensors_7min_analysis.png`, `analysis/pressure_deep_dive.png`, `analysis/extended_sessions_5_15min.png`
+
+## BLE Disconnect Investigation
+
+Session dropped at **10 minutes 47 seconds** with `FlutterBluePlusException | fbp-code: 6 | device is not connected`.
+
+Firmware updated with diagnostics:
+- **Reset reason logging** at boot — distinguishes brown-out (`ESP_RST_BROWNOUT`) from normal operation
+- **Disconnect duration + heap** logged — tracks how long connection survived
+- **60-second diagnostic prints** — heap monitoring catches memory leaks
+- **Connection parameters**: 15-30ms interval, 0 latency, 4s supervision timeout (was default ~2s)
+- **Sleep blocked during recording** — power button long-press ignored while session active
+
+Most likely cause: BLE supervision timeout (signal hiccup > default 2s limit) or phone OS power management. The 4s timeout + faster connection interval should improve stability. Next disconnect will show the exact cause in serial log.
+
+## SHT40 Humidity — Replaced
+
+Previously tested SHT40 humidity sensor (2 sessions analyzed):
+- **5-min session** (`5minsHumidity.gz`): Humidity range 59-74%, detected 18 breath peaks (vs thermistor 29)
+- Humidity response time τ63 ≈ 4-8s — acts as low-pass filter, merges adjacent breaths
+- At 7 br/min (8.5s cycle), SHT40 only captures **22% of actual signal amplitude**
+- **Verdict**: Too slow for primary breath detection. Replaced with BMP280 pressure.
+
+## HRV Status — Needs Work
+
+From the 7-min and 15-min sessions:
+- IR signal only detected 4 breath-rate peaks in 7 min — unusable for both breath and HRV
+- 99.5% finger contact in earlier 15-min session, but only 5% beat detection rate
+- IR AC amplitude ~700 counts on ~60K DC level (1.2% AC/DC ratio)
+- **Root cause**: Simple peak detection insufficient. Need proper bandpass filter (0.5-5 Hz for HRV, different from breath rate).
 
 ## Next Steps
 
-1. **Analyze 10-min new-casing recording** — verify sensor stability improvement
-2. **Build Flutter debug/visualization screen** — real-time display of raw sensor values, thermistor waveform, IR waveform, and BLE connection state, so we can see exactly what's being sent and whether sensors are reacting correctly
-3. **Improve HRV outlier rejection** — clean up false peaks inflating RMSSD/SDNN
-4. **Add adaptive breath threshold** — prevent overcounting when signal weakens
+1. **Design enclosure/casing** — better sensor placement for nose proximity, secure fit for long sessions
+2. **Record 1-hour session** — validate pressure stability beyond 15 minutes, test BLE reconnection with new firmware
+3. **Record 24-hour ambient session** — all-day breathing patterns, understand baseline variability
+4. **Improve HRV peak detection** — implement bandpass filter for IR signal
+5. **Add real-time feedback UI** — breath detection confidence, signal quality indicators
+6. **Tune breath hold detection** — use rolling amplitude (3s window std) instead of individual peak detection
+
+## Previous Issues (All Resolved)
+- ~~7x BLE sample duplication~~ — Fixed with dedup in device_provider.dart
+- ~~Breath count wildly wrong~~ — Fixed with 15s moving average baseline
+- ~~HRV metrics all 0~~ — Fixed with 2.5s DC removal + prominence threshold
+- ~~MAX30102 ADC saturation~~ — Fixed with adcRange=16384
+- ~~LED optical crosstalk~~ — Root cause identified (see docs/PowerNoiseAnalysis.md)
+- ~~SHT40 too slow for breath~~ — Replaced with BMP280 pressure
+- ~~BLE disconnect during recording~~ — Added 4s supervision timeout, sleep block, diagnostics
+- ~~NimBLE 1.4.3 callback crash~~ — Fixed: use `ble_gap_conn_desc*` not `NimBLEConnInfo&`
 
 ## Key Files
 
 | File | Location | Role |
 |------|----------|------|
-| Firmware | `firmware/src/main.cpp` | ESP32 sensor reading + BLE |
-| BLE Service | App `lib/services/ble_service.dart` | Receives BLE notifications |
-| Device Provider | App `lib/providers/device_provider.dart` | Buffers samples with dedup |
-| Storage Service | App `lib/services/breath_storage_service.dart` | Gzip + upload to Firebase |
-| Cloud Function | App `functions/src/index.ts` | Breath + HRV analysis |
-| Analysis Plots | `~/Downloads/15min_*.png` | Session visualization (4 figures) |
-| Thermistor Research | `docs/ThermistorReplacementFindings.md` | Sensor replacement options |
+| Firmware | `firmware/src/main.cpp` | ESP32 sensor reading + BLE (20-byte packet) + diagnostics |
+| Platform config | `firmware/platformio.ini` | BMP280 + NimBLE + MAX30102 libs |
+| Breath data model | App `lib/models/breath_data.dart` | Parses 14/18/20-byte BLE packets |
+| Debug screen | App `lib/screens/device_debug_screen.dart` | Real-time waveforms + signal quality |
+| Signal metrics | App `lib/utils/signal_metrics.dart` | SignalType enum with pressure support |
+| Waveform painter | App `lib/widgets/signal_waveform_painter.dart` | Canvas drawing for all signal types |
+| Storage service | App `lib/services/breath_storage_service.dart` | Gzip upload (v3 format, 7 fields) |
+| 7-min analysis | `analysis/plot_all_sensors_7min.py` | All sensors comparison (thermistor vs pressure vs IR) |
+| Pressure deep dive | `analysis/pressure_deep_dive.py` | Breath intervals, SNR, waveform consistency |
+| Extended sessions | `analysis/plot_extended_sessions.py` | Minutes 5-15, breath hold experiment |
+| BMP280 analysis | `analysis/plot_bmp280_session.py` | Original pressure vs thermistor comparison |
+| Long session analysis | `analysis/analyze_long_session.py` | Minute-by-minute degradation analysis |
 | Noise Analysis | `docs/PowerNoiseAnalysis.md` | LED optical crosstalk investigation |
+| Thermistor Research | `docs/ThermistorReplacementFindings.md` | Sensor replacement options |
 
 ## Hardware Setup (XIAO ESP32S3)
 
@@ -102,6 +146,10 @@ Detailed findings in `docs/ThermistorReplacementFindings.md`. Summary:
 | Thermistor (NTC 10K glass bead) | GPIO1 (A0) | 10K voltage divider to 3.3V |
 | LED | GPIO3 (D2) | Direct drive, no NPN |
 | Power button | GPIO4 (D3) | Internal pullup |
-| I2C SDA (MAX30102) | GPIO5 (D4) | |
-| I2C SCL (MAX30102) | GPIO6 (D5) | |
+| I2C SDA (MAX30102) | GPIO5 (D4) | Wire (default bus) |
+| I2C SCL (MAX30102) | GPIO6 (D5) | Wire (default bus) |
+| I2C SDA2 (BMP280) | GPIO7 (D8) | Wire1 (second bus) |
+| I2C SCL2 (BMP280) | GPIO8 (D9) | Wire1 (second bus) |
+| BMP280 CSB | → VCC (3.3V) | Required for I2C mode |
+| BMP280 SDO | → GND | Sets address to 0x76 |
 | Upload port | `/dev/cu.usbmodem1101` or `…101` | Check with `ls /dev/cu.*` |

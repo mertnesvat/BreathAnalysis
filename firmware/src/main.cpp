@@ -20,7 +20,7 @@
 #include "MAX30105.h"
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
-#include <SensirionI2cSht4x.h>
+#include <Adafruit_BMP280.h>
 
 // ============== BLE CONFIGURATION ==============
 #define DEVICE_NAME "BreathMonitor"
@@ -46,8 +46,8 @@ const int PIN_LED = 3;          // D2 (GPIO3) - direct drive LED
 const int PIN_BTN_POWER = 4;   // D3 (GPIO4) - power/sleep button
 const int PIN_SDA = 5;         // D4 (GPIO5) - I2C SDA (MAX30102)
 const int PIN_SCL = 6;         // D5 (GPIO6) - I2C SCL (MAX30102)
-const int PIN_SDA2 = 7;       // D8 (GPIO7) - I2C SDA2 (SHT40)
-const int PIN_SCL2 = 8;       // D9 (GPIO8) - I2C SCL2 (SHT40)
+const int PIN_SDA2 = 7;       // D8 (GPIO7) - I2C SDA2 (BME280)
+const int PIN_SCL2 = 8;       // D9 (GPIO8) - I2C SCL2 (BME280)
 #else
 // ESP32 WROOM-32 (HW-394) pinout
 const int PIN_THERMISTOR = 32;  // GPIO32 (ADC1_CH4)
@@ -65,7 +65,7 @@ const uint8_t CMD_RESUME = 0x04;
 
 // ============== GLOBAL OBJECTS ==============
 MAX30105 pulseOximeter;
-SensirionI2cSht4x sht40;
+Adafruit_BMP280 bmp280(&Wire1);
 NimBLEServer* pServer = nullptr;
 NimBLECharacteristic* pSensorDataChar = nullptr;
 NimBLECharacteristic* pStatusChar = nullptr;
@@ -80,17 +80,22 @@ bool isPaused = false;
 unsigned long sessionStartTime = 0;
 unsigned long lastSampleTime = 0;
 unsigned long lastStatusTime = 0;
+unsigned long lastDiagTime = 0;
+unsigned long connectTime = 0;  // When BLE connected (for disconnect timing)
 
 // Sensor state
 bool sensorsOK = false;
 bool max30102OK = false;
-bool sht40OK = false;
+bool bme280OK = false;
 
-// SHT40 cached values (read at 1Hz, sent in every 20Hz packet)
+// BME280 cached values (read at 20Hz for pressure, humidity updates ~1Hz internally)
 float cachedTemperature = 0.0;
 float cachedHumidity = 0.0;
-unsigned long lastSHT40Read = 0;
-const unsigned long SHT40_INTERVAL_MS = 1000;
+float cachedPressurePa = 101325.0;
+float baselinePressurePa = 0.0;
+bool baselineCaptured = false;
+unsigned long lastBME280Read = 0;
+const unsigned long BME280_INTERVAL_MS = 50;  // 20Hz reads
 
 // LED state
 const int LED_FREQ = 200;  // Low freq: easier for caps to filter, still flicker-free
@@ -110,16 +115,17 @@ const float SMOOTHING = 0.3;
 const float SENSITIVITY = 8.0;
 
 // ============== DATA PACKET STRUCTURE ==============
-// Binary packet: 18 bytes (fits in BLE MTU, 20-byte payload limit)
+// Binary packet: 20 bytes (fits in BLE MTU, 20-byte payload limit)
 #pragma pack(push, 1)
 struct SensorPacket {
-    uint32_t timestamp_ms;  // 4 bytes
-    uint16_t thermistor;    // 2 bytes (ADC 0-4095)
-    uint32_t ir_value;      // 4 bytes
-    uint32_t red_value;     // 4 bytes
-    int16_t  temperature;   // 2 bytes (°C × 100, e.g. 2350 = 23.50°C)
-    uint16_t humidity;      // 2 bytes (%RH × 100, e.g. 4520 = 45.20%)
-};  // Total: 18 bytes
+    uint32_t timestamp_ms;      // 4 bytes
+    uint16_t thermistor;        // 2 bytes (ADC 0-4095)
+    uint32_t ir_value;          // 4 bytes
+    uint32_t red_value;         // 4 bytes
+    int16_t  temperature;       // 2 bytes (°C × 100)
+    uint16_t humidity;          // 2 bytes (%RH × 100)
+    int16_t  pressure_delta;    // 2 bytes (Pa × 100 relative to baseline)
+};  // Total: 20 bytes
 #pragma pack(pop)
 
 // Status packet: 4 bytes
@@ -139,7 +145,7 @@ void setupLED();
 void setupButtons();
 void updateLED();
 void handleButtons();
-void updateSHT40();
+void updateBME280();
 void sendSensorData();
 void sendStatus();
 void startRecording();
@@ -155,9 +161,17 @@ void enterDeepSleep();
 
 // ============== BLE CALLBACKS ==============
 class ServerCallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer* pServer) {
+    void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
         deviceConnected = true;
-        Serial.println("[BLE] Client connected");
+        connectTime = millis();
+        Serial.printf("[BLE] Client connected (heap: %u)\n", ESP.getFreeHeap());
+
+        // Request stable connection parameters:
+        //   minInterval=12 (15ms), maxInterval=24 (30ms) — fast enough for 20Hz
+        //   latency=0 — don't skip any connection events
+        //   timeout=400 (4000ms) — tolerate 4s of signal hiccup before disconnect
+        pServer->updateConnParams(desc->conn_handle, 12, 24, 0, 400);
+        Serial.println("[BLE] Requested conn params: 15-30ms interval, 4s timeout");
 
         // Visual feedback: quick pulse
         for (int i = 0; i < 2; i++) {
@@ -170,15 +184,16 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
     void onDisconnect(NimBLEServer* pServer) {
         deviceConnected = false;
-        Serial.println("[BLE] Client disconnected");
+        unsigned long connDuration = (millis() - connectTime) / 1000;
+        Serial.printf("[BLE] DISCONNECTED after %lus (heap: %u)\n", connDuration, ESP.getFreeHeap());
 
         // Pause recording on disconnect (not stop)
         if (isRecording) {
             isPaused = true;
-            Serial.println("[Session] Paused (BLE disconnected)");
+            Serial.println("[Session] Paused (BLE disconnected) — waiting for reconnect");
         }
 
-        // Restart advertising
+        // Restart advertising immediately
         NimBLEDevice::startAdvertising();
         Serial.println("[BLE] Advertising restarted");
     }
@@ -224,7 +239,23 @@ void setup() {
     Serial.println("  Breath Analysis - BLE Edition");
     Serial.println("  Board: " BOARD_NAME);
     Serial.println("  Firmware: " FIRMWARE_VERSION);
-    Serial.println("========================================\n");
+    Serial.println("========================================");
+
+    // Log reset reason — crucial for diagnosing battery disconnects
+    esp_reset_reason_t reason = esp_reset_reason();
+    Serial.printf("[Boot] Reset reason: %d ", reason);
+    switch (reason) {
+        case ESP_RST_POWERON:  Serial.println("(power on)"); break;
+        case ESP_RST_SW:       Serial.println("(software reset)"); break;
+        case ESP_RST_PANIC:    Serial.println("(crash/panic)"); break;
+        case ESP_RST_INT_WDT:  Serial.println("(interrupt watchdog)"); break;
+        case ESP_RST_TASK_WDT: Serial.println("(task watchdog)"); break;
+        case ESP_RST_WDT:      Serial.println("(other watchdog)"); break;
+        case ESP_RST_DEEPSLEEP:Serial.println("(deep sleep wake)"); break;
+        case ESP_RST_BROWNOUT: Serial.println("(BROWNOUT — battery voltage too low!)"); break;
+        default:               Serial.println("(unknown)"); break;
+    }
+    Serial.printf("[Boot] Free heap: %u bytes\n\n", ESP.getFreeHeap());
 
     Wire.begin(PIN_SDA, PIN_SCL);
 
@@ -271,6 +302,19 @@ void loop() {
         if (currentTime - lastStatusTime >= STATUS_INTERVAL_MS) {
             lastStatusTime = currentTime;
             sendStatus();
+        }
+    }
+
+    // Diagnostics every 60 seconds — track heap to catch memory leaks
+    {
+        unsigned long currentTime = millis();
+        if (currentTime - lastDiagTime >= 60000) {
+            lastDiagTime = currentTime;
+            unsigned long uptime = currentTime / 1000;
+            Serial.printf("[Diag] uptime=%lus heap=%u conn=%s rec=%s\n",
+                uptime, ESP.getFreeHeap(),
+                deviceConnected ? "yes" : "no",
+                isRecording ? (isPaused ? "paused" : "active") : "idle");
         }
     }
 }
@@ -372,30 +416,63 @@ void setupSensors() {
         max30102OK = false;
     }
 
-    // Initialize SHT40 on second I2C bus
+    // Initialize BME280 on second I2C bus
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
-    Serial.print("[Sensor] SHT40... ");
     Wire1.begin(PIN_SDA2, PIN_SCL2);
-    sht40.begin(Wire1, SHT40_I2C_ADDR_44);
 
-    float testTemp, testHum;
-    uint16_t sht40Error = sht40.measureHighPrecision(testTemp, testHum);
-    if (sht40Error == 0) {
+    // Scan I2C bus to find what's connected
+    Serial.println("[I2C] Scanning Wire1 (D8/D9)...");
+    for (byte addr = 1; addr < 127; addr++) {
+        Wire1.beginTransmission(addr);
+        if (Wire1.endTransmission() == 0) {
+            Serial.printf("  Found device at 0x%02X\n", addr);
+            // Read chip ID register (0xD0) for Bosch sensors
+            if (addr == 0x76 || addr == 0x77) {
+                Wire1.beginTransmission(addr);
+                Wire1.write(0xD0);
+                Wire1.endTransmission();
+                Wire1.requestFrom(addr, (uint8_t)1);
+                if (Wire1.available()) {
+                    uint8_t chipId = Wire1.read();
+                    Serial.printf("  Chip ID: 0x%02X", chipId);
+                    if (chipId == 0x60) Serial.println(" (BME280)");
+                    else if (chipId == 0x58) Serial.println(" (BMP280 — no humidity!)");
+                    else Serial.printf(" (unknown)\n");
+                }
+            }
+        }
+    }
+
+    Serial.print("[Sensor] BMP280... ");
+    if (bmp280.begin(0x76) || bmp280.begin(0x77)) {
         Serial.println("OK");
-        sht40OK = true;
-        cachedTemperature = testTemp;
-        cachedHumidity = testHum;
-        Serial.printf("  Temp: %.2f°C, RH: %.2f%%\n", testTemp, testHum);
+        bme280OK = true;
+
+        // Configure for high-frequency pressure reading
+        // Pressure 16x oversample (~0.18 Pa resolution), temp 2x
+        bmp280.setSampling(
+            Adafruit_BMP280::MODE_NORMAL,
+            Adafruit_BMP280::SAMPLING_X2,   // temperature
+            Adafruit_BMP280::SAMPLING_X16,  // pressure (max resolution)
+            Adafruit_BMP280::FILTER_X4,     // IIR filter for pressure noise
+            Adafruit_BMP280::STANDBY_MS_1   // 1ms standby (fastest)
+        );
+
+        cachedTemperature = bmp280.readTemperature();
+        cachedPressurePa = bmp280.readPressure();
+
+        Serial.printf("  Temp: %.2f°C, P: %.2f hPa\n",
+            cachedTemperature, cachedPressurePa / 100.0);
     } else {
-        Serial.printf("FAILED (error: %d)\n", sht40Error);
-        sht40OK = false;
+        Serial.println("FAILED (check wiring: CSB→VCC, SDO→GND)");
+        bme280OK = false;
     }
 #endif
 
     sensorsOK = thermistorOK && max30102OK;
-    Serial.printf("[Sensor] Status: %s (SHT40: %s)\n",
+    Serial.printf("[Sensor] Status: %s (BMP280: %s)\n",
         sensorsOK ? "ALL OK" : "ERROR",
-        sht40OK ? "OK" : "N/A");
+        bme280OK ? "OK" : "N/A");
 }
 
 // ============== BUTTON HANDLER ==============
@@ -409,8 +486,20 @@ void handleButtons() {
         btnPowerPressed = true;
     } else if (powerState == LOW && btnPowerPressed) {
         if (now - btnPowerPressTime >= LONG_PRESS_MS) {
-            Serial.println("[Button] Power long-press - sleeping");
-            enterDeepSleep();
+            if (isRecording) {
+                Serial.println("[Button] Power long-press IGNORED — recording active");
+                // Flash LED to indicate "can't sleep while recording"
+                for (int i = 0; i < 4; i++) {
+                    ledcWrite(PIN_LED, 255);
+                    delay(50);
+                    ledcWrite(PIN_LED, 0);
+                    delay(50);
+                }
+                btnPowerPressed = false;  // Reset so it doesn't keep triggering
+            } else {
+                Serial.println("[Button] Power long-press - sleeping");
+                enterDeepSleep();
+            }
         }
     } else if (powerState == HIGH && btnPowerLastState == LOW) {
         btnPowerPressed = false;
@@ -498,20 +587,24 @@ void stopRecording() {
     }
 }
 
-// ============== UPDATE SHT40 CACHE ==============
-void updateSHT40() {
+// ============== UPDATE BME280 CACHE ==============
+void updateBME280() {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
-    if (!sht40OK) return;
+    if (!bme280OK) return;
 
     unsigned long now = millis();
-    if (now - lastSHT40Read < SHT40_INTERVAL_MS) return;
+    if (now - lastBME280Read < BME280_INTERVAL_MS) return;
 
-    lastSHT40Read = now;
-    float temp, hum;
-    uint16_t error = sht40.measureHighPrecision(temp, hum);
-    if (error == 0) {
-        cachedTemperature = temp;
-        cachedHumidity = hum;
+    lastBME280Read = now;
+    cachedTemperature = bmp280.readTemperature();
+    cachedPressurePa = bmp280.readPressure();
+    // BMP280 has no humidity — cachedHumidity stays 0
+
+    // Capture baseline pressure from first second of readings
+    if (!baselineCaptured && now > 1000) {
+        baselinePressurePa = cachedPressurePa;
+        baselineCaptured = true;
+        Serial.printf("[BMP280] Baseline pressure: %.2f hPa\n", baselinePressurePa / 100.0);
     }
 #endif
 }
@@ -520,7 +613,7 @@ void updateSHT40() {
 void sendSensorData() {
     if (!pSensorDataChar) return;
 
-    updateSHT40();
+    updateBME280();
 
     SensorPacket packet;
     packet.timestamp_ms = millis() - sessionStartTime;
@@ -529,6 +622,13 @@ void sendSensorData() {
     packet.red_value = pulseOximeter.getRed();
     packet.temperature = (int16_t)(cachedTemperature * 100.0f);
     packet.humidity = (uint16_t)(cachedHumidity * 100.0f);
+
+    // Pressure delta: (current - baseline) × 100, clamped to int16 range
+    float deltaPA = cachedPressurePa - baselinePressurePa;
+    float deltaScaled = deltaPA * 100.0f;
+    if (deltaScaled > 32767.0f) deltaScaled = 32767.0f;
+    if (deltaScaled < -32768.0f) deltaScaled = -32768.0f;
+    packet.pressure_delta = (int16_t)deltaScaled;
 
     pSensorDataChar->setValue((uint8_t*)&packet, sizeof(SensorPacket));
     pSensorDataChar->notify();
