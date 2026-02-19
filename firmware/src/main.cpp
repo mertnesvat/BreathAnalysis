@@ -21,6 +21,7 @@
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
 #include <Adafruit_BMP280.h>
+#include <WiFi.h>
 
 // ============== BLE CONFIGURATION ==============
 #define DEVICE_NAME "BreathMonitor"
@@ -114,6 +115,12 @@ float thermSmoothed = 2000.0;
 const float SMOOTHING = 0.3;
 const float SENSITIVITY = 8.0;
 
+// BLE TX health tracking
+unsigned long notifyFailCount = 0;
+unsigned long notifySuccessCount = 0;
+bool bleCongested = false;
+unsigned long congestedSince = 0;
+
 // ============== DATA PACKET STRUCTURE ==============
 // Binary packet: 20 bytes (fits in BLE MTU, 20-byte payload limit)
 #pragma pack(push, 1)
@@ -160,6 +167,26 @@ void enterDeepSleep();
 #endif
 
 // ============== BLE CALLBACKS ==============
+class SensorDataCallbacks : public NimBLECharacteristicCallbacks {
+    void onStatus(NimBLECharacteristic* pChar, Status s, int code) {
+        if (s == SUCCESS_NOTIFY) {
+            notifySuccessCount++;
+            if (bleCongested) {
+                bleCongested = false;
+                unsigned long dur = millis() - congestedSince;
+                Serial.printf("[BLE] TX congestion cleared after %lums\n", dur);
+            }
+        } else {
+            notifyFailCount++;
+            if (!bleCongested) {
+                bleCongested = true;
+                congestedSince = millis();
+                Serial.printf("[BLE] TX notify error: status=%d code=%d\n", s, code);
+            }
+        }
+    }
+};
+
 class ServerCallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
         deviceConnected = true;
@@ -184,8 +211,10 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
     void onDisconnect(NimBLEServer* pServer) {
         deviceConnected = false;
+        bleCongested = false;
         unsigned long connDuration = (millis() - connectTime) / 1000;
-        Serial.printf("[BLE] DISCONNECTED after %lus (heap: %u)\n", connDuration, ESP.getFreeHeap());
+        Serial.printf("[BLE] DISCONNECTED after %lus (heap: %u, notify fail/ok: %lu/%lu)\n",
+            connDuration, ESP.getFreeHeap(), notifyFailCount, notifySuccessCount);
 
         // Pause recording on disconnect (not stop)
         if (isRecording) {
@@ -234,6 +263,9 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
 void setup() {
     Serial.begin(115200);
     delay(500);
+
+    // Disable WiFi — frees the shared radio for BLE-only operation
+    WiFi.mode(WIFI_OFF);
 
     Serial.println("\n========================================");
     Serial.println("  Breath Analysis - BLE Edition");
@@ -311,10 +343,11 @@ void loop() {
         if (currentTime - lastDiagTime >= 60000) {
             lastDiagTime = currentTime;
             unsigned long uptime = currentTime / 1000;
-            Serial.printf("[Diag] uptime=%lus heap=%u conn=%s rec=%s\n",
+            Serial.printf("[Diag] uptime=%lus heap=%u conn=%s rec=%s notify=%lu/%lu(fail/ok)\n",
                 uptime, ESP.getFreeHeap(),
                 deviceConnected ? "yes" : "no",
-                isRecording ? (isPaused ? "paused" : "active") : "idle");
+                isRecording ? (isPaused ? "paused" : "active") : "idle",
+                notifyFailCount, notifySuccessCount);
         }
     }
 }
@@ -346,6 +379,7 @@ void setupBLE() {
         CHAR_SENSOR_DATA,
         NIMBLE_PROPERTY::NOTIFY
     );
+    pSensorDataChar->setCallbacks(new SensorDataCallbacks());
 
     // Control characteristic (write)
     pControlChar = pService->createCharacteristic(
@@ -629,6 +663,9 @@ void updateBME280() {
 void sendSensorData() {
     if (!pSensorDataChar) return;
 
+    // Skip this sample if BLE TX is congested — let buffer drain
+    if (bleCongested) return;
+
     updateBME280();
 
     SensorPacket packet;
@@ -652,7 +689,7 @@ void sendSensorData() {
 
 // ============== SEND STATUS ==============
 void sendStatus() {
-    if (!pStatusChar) return;
+    if (!pStatusChar || bleCongested) return;
 
     StatusPacket status;
     status.battery_percent = 100;  // TODO: Read actual battery
