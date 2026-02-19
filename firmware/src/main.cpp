@@ -422,9 +422,11 @@ void setupSensors() {
 
     // Scan I2C bus to find what's connected
     Serial.println("[I2C] Scanning Wire1 (D8/D9)...");
+    int wire1Count = 0;
     for (byte addr = 1; addr < 127; addr++) {
         Wire1.beginTransmission(addr);
         if (Wire1.endTransmission() == 0) {
+            wire1Count++;
             Serial.printf("  Found device at 0x%02X\n", addr);
             // Read chip ID register (0xD0) for Bosch sensors
             if (addr == 0x76 || addr == 0x77) {
@@ -439,6 +441,20 @@ void setupSensors() {
                     else if (chipId == 0x58) Serial.println(" (BMP280 — no humidity!)");
                     else Serial.printf(" (unknown)\n");
                 }
+            }
+        }
+    }
+    if (wire1Count == 0) {
+        Serial.println("  No devices found on Wire1!");
+        // Full scan of primary bus to check if BMP280 ended up there
+        Serial.println("[I2C] Full scan of Wire (D4/D5)...");
+        for (byte addr = 1; addr < 127; addr++) {
+            Wire.beginTransmission(addr);
+            if (Wire.endTransmission() == 0) {
+                Serial.printf("  Wire: found 0x%02X", addr);
+                if (addr == 0x57) Serial.println(" (MAX30102)");
+                else if (addr == 0x76 || addr == 0x77) Serial.println(" (BMP280 — wrong bus!)");
+                else Serial.printf("\n");
             }
         }
     }
