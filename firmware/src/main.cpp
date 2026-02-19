@@ -7,7 +7,7 @@
  *   - ESP32 WROOM-32 (PCB prototype)
  *
  * Sensors:
- *   - Thermistor (NTC 10K) - nasal airflow temperature
+ *   - BMP280 on I2C2 - breath detection via pressure
  *   - MAX30102 on I2C - heart rate & SpO2
  *
  * Communication: BLE (NimBLE) - connects to Flutter meditation app
@@ -25,7 +25,7 @@
 
 // ============== BLE CONFIGURATION ==============
 #define DEVICE_NAME "BreathMonitor"
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "2.0.0"
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -89,9 +89,8 @@ bool sensorsOK = false;
 bool max30102OK = false;
 bool bme280OK = false;
 
-// BME280 cached values (read at 20Hz for pressure, humidity updates ~1Hz internally)
-float cachedTemperature = 0.0;
-float cachedHumidity = 0.0;
+// BMP280 cached values (read at 20Hz for pressure)
+float cachedTemperature = 0.0;  // Still read for diagnostics, not sent over BLE
 float cachedPressurePa = 101325.0;
 float baselinePressurePa = 0.0;
 bool baselineCaptured = false;
@@ -109,11 +108,10 @@ unsigned long btnPowerPressTime = 0;
 bool btnPowerLastState = HIGH;
 bool btnPowerPressed = false;
 
-// Breath LED tracking
-float thermBaseline = 2000.0;
-float thermSmoothed = 2000.0;
-const float SMOOTHING = 0.3;
-const float SENSITIVITY = 8.0;
+// Breath LED tracking (pressure-based)
+float pressSmoothed = 0.0;
+const float PRESS_SMOOTHING = 0.3;
+const float PRESS_SENSITIVITY = 0.25;  // Pa → 0-1 range
 
 // BLE TX health tracking
 unsigned long notifyFailCount = 0;
@@ -122,17 +120,14 @@ bool bleCongested = false;
 unsigned long congestedSince = 0;
 
 // ============== DATA PACKET STRUCTURE ==============
-// Binary packet: 20 bytes (fits in BLE MTU, 20-byte payload limit)
+// Binary packet: 14 bytes (v2 — slimmed: removed thermistor/temp/humidity)
 #pragma pack(push, 1)
 struct SensorPacket {
     uint32_t timestamp_ms;      // 4 bytes
-    uint16_t thermistor;        // 2 bytes (ADC 0-4095)
     uint32_t ir_value;          // 4 bytes
     uint32_t red_value;         // 4 bytes
-    int16_t  temperature;       // 2 bytes (°C × 100)
-    uint16_t humidity;          // 2 bytes (%RH × 100)
     int16_t  pressure_delta;    // 2 bytes (Pa × 100 relative to baseline)
-};  // Total: 20 bytes
+};  // Total: 14 bytes
 #pragma pack(pop)
 
 // Status packet: 4 bytes
@@ -519,10 +514,11 @@ void setupSensors() {
     }
 #endif
 
-    sensorsOK = thermistorOK && max30102OK;
-    Serial.printf("[Sensor] Status: %s (BMP280: %s)\n",
-        sensorsOK ? "ALL OK" : "ERROR",
-        bme280OK ? "OK" : "N/A");
+    sensorsOK = max30102OK;
+    Serial.printf("[Sensor] Status: %s (BMP280: %s, Thermistor: %s — not used in BLE)\n",
+        sensorsOK ? "OK" : "ERROR",
+        bme280OK ? "OK" : "N/A",
+        thermistorOK ? "OK" : "N/A");
 }
 
 // ============== BUTTON HANDLER ==============
@@ -571,14 +567,11 @@ void updateLED() {
         return;
     }
 
-    // Connected: breath-reactive
-    int thermRaw = analogRead(PIN_THERMISTOR);
-    thermSmoothed = (SMOOTHING * thermRaw) + ((1.0 - SMOOTHING) * thermSmoothed);
-    thermBaseline = (0.005 * thermSmoothed) + (0.995 * thermBaseline);
+    // Connected: breath-reactive (pressure-based)
+    float pressDelta = cachedPressurePa - baselinePressurePa;
+    pressSmoothed = (PRESS_SMOOTHING * pressDelta) + ((1.0 - PRESS_SMOOTHING) * pressSmoothed);
 
-    float deviation = thermSmoothed - thermBaseline;
-    float amplified = deviation * SENSITIVITY;
-    float normalized = 0.5 + (amplified / 100.0);
+    float normalized = 0.5 + (pressSmoothed * PRESS_SENSITIVITY);
     normalized = constrain(normalized, 0.0, 1.0);
 
     float corrected = pow(normalized, 1.8);
@@ -648,7 +641,6 @@ void updateBME280() {
     lastBME280Read = now;
     cachedTemperature = bmp280.readTemperature();
     cachedPressurePa = bmp280.readPressure();
-    // BMP280 has no humidity — cachedHumidity stays 0
 
     // Capture baseline pressure from first second of readings
     if (!baselineCaptured && now > 1000) {
@@ -670,11 +662,8 @@ void sendSensorData() {
 
     SensorPacket packet;
     packet.timestamp_ms = millis() - sessionStartTime;
-    packet.thermistor = (uint16_t)analogRead(PIN_THERMISTOR);
     packet.ir_value = pulseOximeter.getIR();
     packet.red_value = pulseOximeter.getRed();
-    packet.temperature = (int16_t)(cachedTemperature * 100.0f);
-    packet.humidity = (uint16_t)(cachedHumidity * 100.0f);
 
     // Pressure delta: (current - baseline) × 100, clamped to int16 range
     float deltaPA = cachedPressurePa - baselinePressurePa;
