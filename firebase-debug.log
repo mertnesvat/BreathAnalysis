@@ -411,3 +411,149 @@
 [debug] [2026-02-12T12:10:21.716Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
 [debug] [2026-02-12T12:10:21.717Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
 [debug] [2026-02-12T12:10:21.717Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T16:24:35.328Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:35.333Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:35.333Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:35.334Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:35.334Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T16:24:35.334Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T16:24:35.334Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T16:24:35.334Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T16:24:35.334Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:35.340Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:35.341Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T16:24:35.341Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T16:24:35.341Z] Checked if tokens are valid: false, expires at: 1771414337235
+[debug] [2026-02-19T16:24:35.341Z] Checked if tokens are valid: false, expires at: 1771414337235
+[debug] [2026-02-19T16:24:35.341Z] > refreshing access token with scopes: []
+[debug] [2026-02-19T16:24:35.342Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-19T16:24:35.342Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T16:24:35.458Z] Checked if tokens are valid: false, expires at: 1771414337235
+[debug] [2026-02-19T16:24:35.458Z] Checked if tokens are valid: false, expires at: 1771414337235
+[debug] [2026-02-19T16:24:35.458Z] > refreshing access token with scopes: []
+[debug] [2026-02-19T16:24:35.458Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-19T16:24:35.458Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T16:24:35.460Z] Checked if tokens are valid: false, expires at: 1771414337235
+[debug] [2026-02-19T16:24:35.460Z] Checked if tokens are valid: false, expires at: 1771414337235
+[debug] [2026-02-19T16:24:35.460Z] > refreshing access token with scopes: []
+[debug] [2026-02-19T16:24:35.460Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-19T16:24:35.460Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T16:24:35.607Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-19T16:24:35.607Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T16:24:35.646Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo [none]
+[debug] [2026-02-19T16:24:35.649Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-19T16:24:35.649Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T16:24:35.671Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [none]
+[debug] [2026-02-19T16:24:35.671Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com  x-goog-user-project=
+[debug] [2026-02-19T16:24:35.672Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-19T16:24:35.672Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T16:24:35.682Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [none]
+[debug] [2026-02-19T16:24:35.682Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com  x-goog-user-project=
+[debug] [2026-02-19T16:24:36.253Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com 400
+[debug] [2026-02-19T16:24:36.253Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [omitted]
+[debug] [2026-02-19T16:24:36.255Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.274Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.275Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.276Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T16:24:36.276Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T16:24:36.276Z] Checked if tokens are valid: true, expires at: 1771521874672
+[debug] [2026-02-19T16:24:36.276Z] Checked if tokens are valid: true, expires at: 1771521874672
+[debug] [2026-02-19T16:24:36.276Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo [none]
+[debug] [2026-02-19T16:24:36.277Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com 400
+[debug] [2026-02-19T16:24:36.277Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [omitted]
+[debug] [2026-02-19T16:24:36.278Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.294Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.295Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.295Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T16:24:36.296Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T16:24:36.296Z] Checked if tokens are valid: true, expires at: 1771521874672
+[debug] [2026-02-19T16:24:36.296Z] Checked if tokens are valid: true, expires at: 1771521874672
+[debug] [2026-02-19T16:24:36.296Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo [none]
+[debug] [2026-02-19T16:24:36.345Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo 200
+[debug] [2026-02-19T16:24:36.345Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo {"name":"projects/meditation-village/billingInfo","projectId":"meditation-village","billingAccountName":"billingAccounts/0140AB-9B3B11-A05C02","billingEnabled":true}
+[debug] [2026-02-19T16:24:36.345Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.610Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo 200
+[debug] [2026-02-19T16:24:36.610Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo {"name":"projects/meditation-village/billingInfo","projectId":"meditation-village","billingAccountName":"billingAccounts/0140AB-9B3B11-A05C02","billingEnabled":true}
+[debug] [2026-02-19T16:24:36.610Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.610Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.611Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T16:24:36.611Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T16:24:36.620Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo 200
+[debug] [2026-02-19T16:24:36.620Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo {"name":"projects/meditation-village/billingInfo","projectId":"meditation-village","billingAccountName":"billingAccounts/0140AB-9B3B11-A05C02","billingEnabled":true}
+[debug] [2026-02-19T16:24:36.620Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.620Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T16:24:36.620Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T16:24:36.621Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T21:20:50.743Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:50.745Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:50.746Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:50.746Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:50.746Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T21:20:50.746Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T21:20:50.747Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T21:20:50.747Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T21:20:50.747Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:50.753Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:50.754Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T21:20:50.754Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T21:20:50.754Z] Checked if tokens are valid: false, expires at: 1771521874672
+[debug] [2026-02-19T21:20:50.754Z] Checked if tokens are valid: false, expires at: 1771521874672
+[debug] [2026-02-19T21:20:50.754Z] > refreshing access token with scopes: []
+[debug] [2026-02-19T21:20:50.755Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-19T21:20:50.755Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T21:20:50.869Z] Checked if tokens are valid: false, expires at: 1771521874672
+[debug] [2026-02-19T21:20:50.870Z] Checked if tokens are valid: false, expires at: 1771521874672
+[debug] [2026-02-19T21:20:50.870Z] > refreshing access token with scopes: []
+[debug] [2026-02-19T21:20:50.870Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-19T21:20:50.870Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T21:20:50.871Z] Checked if tokens are valid: false, expires at: 1771521874672
+[debug] [2026-02-19T21:20:50.871Z] Checked if tokens are valid: false, expires at: 1771521874672
+[debug] [2026-02-19T21:20:50.871Z] > refreshing access token with scopes: []
+[debug] [2026-02-19T21:20:50.871Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-19T21:20:50.871Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T21:20:50.897Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-19T21:20:50.897Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T21:20:50.939Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo [none]
+[debug] [2026-02-19T21:20:51.024Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-19T21:20:51.024Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T21:20:51.040Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [none]
+[debug] [2026-02-19T21:20:51.040Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com  x-goog-user-project=
+[debug] [2026-02-19T21:20:51.041Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-19T21:20:51.041Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-19T21:20:51.052Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [none]
+[debug] [2026-02-19T21:20:51.052Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com  x-goog-user-project=
+[debug] [2026-02-19T21:20:51.635Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com 400
+[debug] [2026-02-19T21:20:51.635Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [omitted]
+[debug] [2026-02-19T21:20:51.636Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:51.638Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com 400
+[debug] [2026-02-19T21:20:51.638Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects//services/firebaseappdistribution.googleapis.com [omitted]
+[debug] [2026-02-19T21:20:51.638Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:51.648Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo 200
+[debug] [2026-02-19T21:20:51.648Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo {"name":"projects/meditation-village/billingInfo","projectId":"meditation-village","billingAccountName":"billingAccounts/0140AB-9B3B11-A05C02","billingEnabled":true}
+[debug] [2026-02-19T21:20:51.648Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:51.655Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:51.656Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:51.657Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T21:20:51.657Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T21:20:51.657Z] Checked if tokens are valid: true, expires at: 1771539650041
+[debug] [2026-02-19T21:20:51.657Z] Checked if tokens are valid: true, expires at: 1771539650041
+[debug] [2026-02-19T21:20:51.657Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo [none]
+[debug] [2026-02-19T21:20:51.659Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:51.660Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:51.660Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T21:20:51.660Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T21:20:51.660Z] Checked if tokens are valid: true, expires at: 1771539650041
+[debug] [2026-02-19T21:20:51.660Z] Checked if tokens are valid: true, expires at: 1771539650041
+[debug] [2026-02-19T21:20:51.660Z] >>> [apiv2][query] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo [none]
+[debug] [2026-02-19T21:20:52.276Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo 200
+[debug] [2026-02-19T21:20:52.277Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo {"name":"projects/meditation-village/billingInfo","projectId":"meditation-village","billingAccountName":"billingAccounts/0140AB-9B3B11-A05C02","billingEnabled":true}
+[debug] [2026-02-19T21:20:52.278Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:52.279Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:52.280Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T21:20:52.280Z] > authorizing via signed-in user (mertnesvat@gmail.com)
+[debug] [2026-02-19T21:20:52.341Z] <<< [apiv2][status] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo 200
+[debug] [2026-02-19T21:20:52.341Z] <<< [apiv2][body] GET https://cloudbilling.googleapis.com/v1/projects/meditation-village/billingInfo {"name":"projects/meditation-village/billingInfo","projectId":"meditation-village","billingAccountName":"billingAccounts/0140AB-9B3B11-A05C02","billingEnabled":true}
+[debug] [2026-02-19T21:20:52.342Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:52.343Z] Object "" in "firebase.json" has unknown property: {"additionalProperty":"flutter"}
+[debug] [2026-02-19T21:20:52.343Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-19T21:20:52.343Z] > authorizing via signed-in user (mertnesvat@gmail.com)
