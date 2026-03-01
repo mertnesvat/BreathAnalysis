@@ -118,6 +118,7 @@ unsigned long notifyFailCount = 0;
 unsigned long notifySuccessCount = 0;
 bool bleCongested = false;
 unsigned long congestedSince = 0;
+const unsigned long CONGESTION_TIMEOUT_MS = 3000;  // Force-clear if stuck > 3s
 
 // ============== DATA PACKET STRUCTURE ==============
 // Binary packet: 14 bytes (v2 — slimmed: removed thermistor/temp/humidity)
@@ -299,6 +300,16 @@ void setup() {
 void loop() {
     handleButtons();
     updateLED();
+    updateBME280();  // Always read sensor — needed for LED and fresh data on resume
+
+    // Congestion watchdog: if bleCongested flag stuck with no notifies for >3s, force-clear.
+    // Without this, a congestion spike after STOP creates a deadlock — no notify() is ever
+    // attempted, so onStatus(SUCCESS_NOTIFY) never fires, and the flag never clears.
+    if (bleCongested && (millis() - congestedSince > CONGESTION_TIMEOUT_MS)) {
+        bleCongested = false;
+        Serial.printf("[BLE] Congestion watchdog: force-cleared after %lums\n",
+            millis() - congestedSince);
+    }
 
     // Handle reconnection
     if (deviceConnected && !oldDeviceConnected) {
@@ -657,8 +668,6 @@ void sendSensorData() {
 
     // Skip this sample if BLE TX is congested — let buffer drain
     if (bleCongested) return;
-
-    updateBME280();
 
     SensorPacket packet;
     packet.timestamp_ms = millis() - sessionStartTime;
